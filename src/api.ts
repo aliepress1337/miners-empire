@@ -7,6 +7,19 @@ export type UpgradeLevelsDto = {
   autoFarm2: number
 }
 
+export type PlayerDto = {
+  id: string
+  telegramId: string | null
+  username: string | null
+  firstName: string | null
+  balance: number
+  clickProfit: number
+  hourlyProfit: number
+  upgradeLevels: UpgradeLevelsDto
+  createdAt: string
+  updatedAt: string
+}
+
 export type PlayerSyncPayload = {
   telegramUser: TelegramUser | null
   balance: number
@@ -26,7 +39,7 @@ export type GameStateDto = {
 
 export type PlayerRewardDto = {
   playerId: string
-  telegramId: number | null
+  telegramId: string | null
   username: string | null
   firstName: string | null
   finalBalance: number
@@ -71,6 +84,27 @@ export async function getGameState() {
   }>(response)
 }
 
+export async function getCurrentPlayer(telegramUser: TelegramUser | null) {
+  const params = new URLSearchParams()
+
+  if (telegramUser?.id) {
+    params.set('telegramId', String(telegramUser.id))
+  }
+
+  const query = params.toString()
+  const url = query
+    ? `${API_BASE_URL}/api/player/current?${query}`
+    : `${API_BASE_URL}/api/player/current`
+
+  const response = await fetch(url)
+
+  return parseJsonResponse<{
+    status: 'ok'
+    game: GameStateDto
+    player: PlayerDto | null
+  }>(response)
+}
+
 export async function syncPlayerProgress(payload: PlayerSyncPayload) {
   const response = await fetch(`${API_BASE_URL}/api/player/sync`, {
     method: 'POST',
@@ -91,7 +125,7 @@ export async function syncPlayerProgress(payload: PlayerSyncPayload) {
   return parseJsonResponse<{
     status: 'ok'
     game: GameStateDto
-    player: unknown
+    player: PlayerDto
   }>(response)
 }
 

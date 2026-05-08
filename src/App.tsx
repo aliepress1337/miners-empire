@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 
 import {
+  getCurrentPlayer,
   getFinalRewards,
   getGameState,
   syncPlayerProgress,
@@ -286,7 +287,7 @@ function findMyReward(
   if (telegramUser) {
     return (
       finalRewards.rewards.find(
-        (reward) => reward.telegramId === telegramUser.id,
+        (reward) => reward.telegramId === String(telegramUser.id),
       ) ?? null
     )
   }
@@ -320,6 +321,7 @@ function App() {
   const [serverGame, setServerGame] = useState<GameStateDto | null>(null)
   const [serverStatusText, setServerStatusText] = useState('Checking backend...')
   const [finalRewards, setFinalRewards] = useState<FinalRewardsDto | null>(null)
+  const [backendPlayerLoaded, setBackendPlayerLoaded] = useState(false)
 
   const displayedBalance = Math.floor(balance)
   const maxLevel = LEVELS.length
@@ -332,27 +334,36 @@ function App() {
   const myReward = findMyReward(finalRewards, telegramUser)
 
   useEffect(() => {
-    initTelegramMiniApp()
-    setTelegramUser(getTelegramUser())
-    setTelegramMode(isOpenedInTelegram())
-    setTelegramStartParam(getTelegramStartParam())
-  }, [])
+    async function initApp() {
+      initTelegramMiniApp()
 
-  useEffect(() => {
-    async function loadBackendGameState() {
+      const currentTelegramUser = getTelegramUser()
+
+      setTelegramUser(currentTelegramUser)
+      setTelegramMode(isOpenedInTelegram())
+      setTelegramStartParam(getTelegramStartParam())
+
       try {
-        const response = await getGameState()
+        const currentPlayerResponse = await getCurrentPlayer(currentTelegramUser)
 
-        setServerGame(response.game)
-        setServerStatusText(`Backend game: ${response.game.status}`)
+        setServerGame(currentPlayerResponse.game)
+        setServerStatusText(`Backend game: ${currentPlayerResponse.game.status}`)
 
-        if (response.game.status === 'finished') {
+        if (currentPlayerResponse.player) {
+          setBalance(currentPlayerResponse.player.balance)
+          setClickProfit(currentPlayerResponse.player.clickProfit)
+          setHourlyProfit(currentPlayerResponse.player.hourlyProfit)
+          setUpgradeLevels(currentPlayerResponse.player.upgradeLevels)
+        }
+
+        if (currentPlayerResponse.game.status === 'finished') {
           try {
             const finalRewardsResponse = await getFinalRewards()
 
             setFinalRewards(finalRewardsResponse.finalRewards)
             setServerStatusText('Backend game: finished, rewards loaded')
           } catch {
+            setFinalRewards(null)
             setServerStatusText('Backend game: finished, rewards not finalized')
           }
         } else {
@@ -361,10 +372,12 @@ function App() {
       } catch {
         setServerGame(null)
         setServerStatusText('Backend unavailable, local beta mode')
+      } finally {
+        setBackendPlayerLoaded(true)
       }
     }
 
-    loadBackendGameState()
+    initApp()
   }, [])
 
   useEffect(() => {
@@ -408,6 +421,10 @@ function App() {
   }, [hourlyProfit, isGameFinished])
 
   useEffect(() => {
+    if (!backendPlayerLoaded) {
+      return
+    }
+
     if (isGameFinished || serverGame?.status !== 'active') {
       return
     }
@@ -436,6 +453,7 @@ function App() {
       window.clearTimeout(timeoutId)
     }
   }, [
+    backendPlayerLoaded,
     displayedBalance,
     clickProfit,
     hourlyProfit,
