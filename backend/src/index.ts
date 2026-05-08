@@ -60,6 +60,14 @@ function getPlayerId(body: Partial<PlayerSyncRequest>) {
   return 'browser:beta-user'
 }
 
+function getPlayerIdFromQuery(telegramId: unknown) {
+  if (typeof telegramId === 'string' && telegramId.trim() !== '') {
+    return `telegram:${telegramId}`
+  }
+
+  return 'browser:beta-user'
+}
+
 function normalizeUpgradeLevels(value: unknown): UpgradeLevels | null {
   if (!value || typeof value !== 'object') {
     return null
@@ -84,6 +92,40 @@ function generatePromoCode(playerId: string, rewardAmount: number) {
   const safeReward = Math.round(rewardAmount * 1000000)
 
   return `MINERS-${safeId}-${safeReward}`
+}
+
+function playerToDto(player: {
+  id: string
+  telegramId: string | null
+  username: string | null
+  firstName: string | null
+  balance: number
+  clickProfit: number
+  hourlyProfit: number
+  smallBoneLevel: number
+  bigBoneLevel: number
+  autoFarm1Level: number
+  autoFarm2Level: number
+  createdAt: Date
+  updatedAt: Date
+}) {
+  return {
+    id: player.id,
+    telegramId: player.telegramId,
+    username: player.username,
+    firstName: player.firstName,
+    balance: player.balance,
+    clickProfit: player.clickProfit,
+    hourlyProfit: player.hourlyProfit,
+    upgradeLevels: {
+      smallBone: player.smallBoneLevel,
+      bigBone: player.bigBoneLevel,
+      autoFarm1: player.autoFarm1Level,
+      autoFarm2: player.autoFarm2Level,
+    },
+    createdAt: player.createdAt,
+    updatedAt: player.updatedAt,
+  }
 }
 
 async function getOrCreateGameState() {
@@ -226,6 +268,33 @@ app.post('/api/game/finish-for-test', async (_req, res) => {
   })
 })
 
+app.get('/api/player/current', async (req, res) => {
+  const playerId = getPlayerIdFromQuery(req.query.telegramId)
+
+  const player = await prisma.player.findUnique({
+    where: {
+      id: playerId,
+    },
+  })
+
+  const game = await getGameStateResponse()
+
+  if (!player) {
+    res.json({
+      status: 'ok',
+      game,
+      player: null,
+    })
+    return
+  }
+
+  res.json({
+    status: 'ok',
+    game,
+    player: playerToDto(player),
+  })
+})
+
 app.post('/api/player/sync', async (req, res) => {
   const gameState = await getOrCreateGameState()
   const gameStatus = getGameStatus(gameState.gameEndsAt)
@@ -314,23 +383,7 @@ app.post('/api/player/sync', async (req, res) => {
   res.json({
     status: 'ok',
     game,
-    player: {
-      id: player.id,
-      telegramId: player.telegramId,
-      username: player.username,
-      firstName: player.firstName,
-      balance: player.balance,
-      clickProfit: player.clickProfit,
-      hourlyProfit: player.hourlyProfit,
-      upgradeLevels: {
-        smallBone: player.smallBoneLevel,
-        bigBone: player.bigBoneLevel,
-        autoFarm1: player.autoFarm1Level,
-        autoFarm2: player.autoFarm2Level,
-      },
-      createdAt: player.createdAt,
-      updatedAt: player.updatedAt,
-    },
+    player: playerToDto(player),
   })
 })
 
@@ -346,23 +399,7 @@ app.get('/api/players', async (_req, res) => {
   res.json({
     status: 'ok',
     game,
-    players: players.map((player) => ({
-      id: player.id,
-      telegramId: player.telegramId,
-      username: player.username,
-      firstName: player.firstName,
-      balance: player.balance,
-      clickProfit: player.clickProfit,
-      hourlyProfit: player.hourlyProfit,
-      upgradeLevels: {
-        smallBone: player.smallBoneLevel,
-        bigBone: player.bigBoneLevel,
-        autoFarm1: player.autoFarm1Level,
-        autoFarm2: player.autoFarm2Level,
-      },
-      createdAt: player.createdAt,
-      updatedAt: player.updatedAt,
-    })),
+    players: players.map(playerToDto),
   })
 })
 
