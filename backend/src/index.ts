@@ -1,27 +1,23 @@
+import { PrismaClient } from '@prisma/client'
 import cors from 'cors'
 import dotenv from 'dotenv'
 import express from 'express'
-import fs from 'node:fs/promises'
 
 dotenv.config()
 
 const app = express()
+const prisma = new PrismaClient()
 
 const PORT = Number(process.env.PORT) || 4000
 const REWARD_POOL = 20
 
+const GAME_STATE_ID = 'main'
 const GAME_DURATION_DAYS = 7
 const GAME_DURATION_MS = GAME_DURATION_DAYS * 24 * 60 * 60 * 1000
 
 const INITIAL_GAME_STARTED_AT = process.env.GAME_STARTED_AT
-  ? new Date(process.env.GAME_STARTED_AT).getTime()
-  : Date.now()
-
-const DB_DIR = new URL('../data/', import.meta.url)
-const DB_FILE = new URL('../data/db.json', import.meta.url)
-
-let gameStartedAt = INITIAL_GAME_STARTED_AT
-let gameEndsAt = gameStartedAt + GAME_DURATION_MS
+  ? new Date(process.env.GAME_STARTED_AT)
+  : new Date()
 
 app.use(cors())
 app.use(express.json())
@@ -45,65 +41,15 @@ type PlayerSyncRequest = {
   upgradeLevels: UpgradeLevels
 }
 
-type StoredPlayer = {
-  id: string
-  telegramId: number | null
-  username: string | null
-  firstName: string | null
-  balance: number
-  clickProfit: number
-  hourlyProfit: number
-  upgradeLevels: UpgradeLevels
-  createdAt: string
-  updatedAt: string
-}
-
 type PlayerReward = {
   playerId: string
-  telegramId: number | null
+  telegramId: string | null
   username: string | null
   firstName: string | null
   finalBalance: number
   sharePercent: number
   rewardAmount: number
   promoCode: string
-}
-
-type FinalizedRewards = {
-  rewardPool: number
-  playersCount: number
-  totalBalance: number
-  rewards: PlayerReward[]
-  finalizedAt: string
-}
-
-type DatabaseFile = {
-  gameStartedAt: number
-  gameEndsAt: number
-  players: StoredPlayer[]
-  finalizedRewards: FinalizedRewards | null
-}
-
-const players = new Map<string, StoredPlayer>()
-
-let finalizedRewards: FinalizedRewards | null = null
-
-function getGameStatus(): GameStatus {
-  return Date.now() >= gameEndsAt ? 'finished' : 'active'
-}
-
-function getGameState() {
-  const now = Date.now()
-  const status = getGameStatus()
-
-  return {
-    status,
-    startedAt: new Date(gameStartedAt).toISOString(),
-    endsAt: new Date(gameEndsAt).toISOString(),
-    serverTime: new Date(now).toISOString(),
-    rewardPool: REWARD_POOL,
-    rewardsFinalized: finalizedRewards !== null,
-  }
 }
 
 function getPlayerId(body: Partial<PlayerSyncRequest>) {
@@ -140,15 +86,64 @@ function generatePromoCode(playerId: string, rewardAmount: number) {
   return `MINERS-${safeId}-${safeReward}`
 }
 
-function calculateRewards(): FinalizedRewards {
-  const allPlayers = Array.from(players.values())
-  const totalBalance = allPlayers.reduce((sum, player) => {
+async function getOrCreateGameState() {
+  const existingGameState = await prisma.gameState.findUnique({
+    where: {
+      id: GAME_STATE_ID,
+    },
+  })
+
+  if (existingGameState) {
+    return existingGameState
+  }
+
+  const gameStartedAt = INITIAL_GAME_STARTED_AT
+  const gameEndsAt = new Date(gameStartedAt.getTime() + GAME_DURATION_MS)
+
+  return prisma.gameState.create({
+    data: {
+      id: GAME_STATE_ID,
+      gameStartedAt,
+      gameEndsAt,
+      rewardPool: REWARD_POOL,
+    },
+  })
+}
+
+function getGameStatus(gameEndsAt: Date): GameStatus {
+  return Date.now() >= gameEndsAt.getTime() ? 'finished' : 'active'
+}
+
+async function getGameStateResponse() {
+  const gameState = await getOrCreateGameState()
+  const status = getGameStatus(gameState.gameEndsAt)
+
+  return {
+    status,
+    startedAt: gameState.gameStartedAt.toISOString(),
+    endsAt: gameState.gameEndsAt.toISOString(),
+    serverTime: new Date().toISOString(),
+    rewardPool: gameState.rewardPool,
+    rewardsFinalized: gameState.finalizedAt !== null,
+  }
+}
+
+async function calculateRewards() {
+  const gameState = await getOrCreateGameState()
+
+  const players = await prisma.player.findMany({
+    orderBy: {
+      balance: 'desc',
+    },
+  })
+
+  const totalBalance = players.reduce((sum, player) => {
     return sum + player.balance
   }, 0)
 
   const rewards: PlayerReward[] =
     totalBalance <= 0
-      ? allPlayers.map((player) => ({
+      ? players.map((player) => ({
           playerId: player.id,
           telegramId: player.telegramId,
           username: player.username,
@@ -158,9 +153,9 @@ function calculateRewards(): FinalizedRewards {
           rewardAmount: 0,
           promoCode: generatePromoCode(player.id, 0),
         }))
-      : allPlayers.map((player) => {
+      : players.map((player) => {
           const share = player.balance / totalBalance
-          const rewardAmount = roundReward(share * REWARD_POOL)
+          const rewardAmount = roundReward(share * gameState.rewardPool)
           const sharePercent = roundReward(share * 100)
 
           return {
@@ -176,84 +171,71 @@ function calculateRewards(): FinalizedRewards {
         })
 
   return {
-    rewardPool: REWARD_POOL,
-    playersCount: allPlayers.length,
+    rewardPool: gameState.rewardPool,
+    playersCount: players.length,
     totalBalance,
     rewards,
     finalizedAt: new Date().toISOString(),
   }
 }
 
-async function loadDatabase() {
+app.get('/health', async (_req, res) => {
   try {
-    const rawDatabase = await fs.readFile(DB_FILE, 'utf-8')
-    const database = JSON.parse(rawDatabase) as Partial<DatabaseFile>
+    await prisma.$queryRaw`SELECT 1`
 
-    gameStartedAt = Number(database.gameStartedAt) || INITIAL_GAME_STARTED_AT
-    gameEndsAt = Number(database.gameEndsAt) || gameStartedAt + GAME_DURATION_MS
-    finalizedRewards = database.finalizedRewards ?? null
-
-    players.clear()
-
-    if (Array.isArray(database.players)) {
-      for (const player of database.players) {
-        if (player?.id) {
-          players.set(player.id, player)
-        }
-      }
-    }
-
-    console.log(`Database loaded. Players: ${players.size}`)
+    res.json({
+      status: 'ok',
+      service: 'miners-empire-backend',
+      database: 'connected',
+      timestamp: new Date().toISOString(),
+    })
   } catch {
-    console.log('No database file found. Starting with empty database.')
-    await saveDatabase()
+    res.status(500).json({
+      status: 'error',
+      service: 'miners-empire-backend',
+      database: 'disconnected',
+      timestamp: new Date().toISOString(),
+    })
   }
-}
-
-async function saveDatabase() {
-  const database: DatabaseFile = {
-    gameStartedAt,
-    gameEndsAt,
-    players: Array.from(players.values()),
-    finalizedRewards,
-  }
-
-  await fs.mkdir(DB_DIR, { recursive: true })
-  await fs.writeFile(DB_FILE, JSON.stringify(database, null, 2), 'utf-8')
-}
-
-app.get('/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'miners-empire-backend',
-    timestamp: new Date().toISOString(),
-  })
 })
 
-app.get('/api/game/state', (_req, res) => {
+app.get('/api/game/state', async (_req, res) => {
+  const game = await getGameStateResponse()
+
   res.json({
     status: 'ok',
-    game: getGameState(),
+    game,
   })
 })
 
 app.post('/api/game/finish-for-test', async (_req, res) => {
-  gameEndsAt = Date.now()
-  await saveDatabase()
+  await prisma.gameState.update({
+    where: {
+      id: GAME_STATE_ID,
+    },
+    data: {
+      gameEndsAt: new Date(),
+    },
+  })
+
+  const game = await getGameStateResponse()
 
   res.json({
     status: 'ok',
-    game: getGameState(),
+    game,
   })
 })
 
 app.post('/api/player/sync', async (req, res) => {
-  const gameStatus = getGameStatus()
+  const gameState = await getOrCreateGameState()
+  const gameStatus = getGameStatus(gameState.gameEndsAt)
 
   if (gameStatus === 'finished') {
+    const game = await getGameStateResponse()
+
     res.status(403).json({
       error: 'game is finished',
-      game: getGameState(),
+      game,
     })
     return
   }
@@ -290,67 +272,125 @@ app.post('/api/player/sync', async (req, res) => {
     return
   }
 
-  const now = new Date().toISOString()
   const playerId = getPlayerId(body)
-  const existingPlayer = players.get(playerId)
 
-  const storedPlayer: StoredPlayer = {
-    id: playerId,
-    telegramId: body.telegramId ?? null,
-    username: body.username ?? null,
-    firstName: body.firstName ?? null,
-    balance: Math.max(0, Math.floor(body.balance)),
-    clickProfit: Math.max(1, Math.floor(body.clickProfit)),
-    hourlyProfit: Math.max(0, Math.floor(body.hourlyProfit)),
-    upgradeLevels,
-    createdAt: existingPlayer?.createdAt ?? now,
-    updatedAt: now,
-  }
+  const player = await prisma.player.upsert({
+    where: {
+      id: playerId,
+    },
+    create: {
+      id: playerId,
+      telegramId:
+        typeof body.telegramId === 'number' ? String(body.telegramId) : null,
+      username: body.username ?? null,
+      firstName: body.firstName ?? null,
+      balance: Math.max(0, Math.floor(body.balance)),
+      clickProfit: Math.max(1, Math.floor(body.clickProfit)),
+      hourlyProfit: Math.max(0, Math.floor(body.hourlyProfit)),
+      smallBoneLevel: upgradeLevels.smallBone,
+      bigBoneLevel: upgradeLevels.bigBone,
+      autoFarm1Level: upgradeLevels.autoFarm1,
+      autoFarm2Level: upgradeLevels.autoFarm2,
+    },
+    update: {
+      telegramId:
+        typeof body.telegramId === 'number' ? String(body.telegramId) : null,
+      username: body.username ?? null,
+      firstName: body.firstName ?? null,
+      balance: Math.max(0, Math.floor(body.balance)),
+      clickProfit: Math.max(1, Math.floor(body.clickProfit)),
+      hourlyProfit: Math.max(0, Math.floor(body.hourlyProfit)),
+      smallBoneLevel: upgradeLevels.smallBone,
+      bigBoneLevel: upgradeLevels.bigBone,
+      autoFarm1Level: upgradeLevels.autoFarm1,
+      autoFarm2Level: upgradeLevels.autoFarm2,
+    },
+  })
 
-  players.set(playerId, storedPlayer)
-  await saveDatabase()
+  const game = await getGameStateResponse()
 
-  console.log('Player stored:', storedPlayer)
+  console.log('Player stored:', player)
 
   res.json({
     status: 'ok',
-    game: getGameState(),
-    player: storedPlayer,
+    game,
+    player: {
+      id: player.id,
+      telegramId: player.telegramId,
+      username: player.username,
+      firstName: player.firstName,
+      balance: player.balance,
+      clickProfit: player.clickProfit,
+      hourlyProfit: player.hourlyProfit,
+      upgradeLevels: {
+        smallBone: player.smallBoneLevel,
+        bigBone: player.bigBoneLevel,
+        autoFarm1: player.autoFarm1Level,
+        autoFarm2: player.autoFarm2Level,
+      },
+      createdAt: player.createdAt,
+      updatedAt: player.updatedAt,
+    },
   })
 })
 
-app.get('/api/players', (_req, res) => {
-  const allPlayers = Array.from(players.values())
+app.get('/api/players', async (_req, res) => {
+  const players = await prisma.player.findMany({
+    orderBy: {
+      balance: 'desc',
+    },
+  })
+
+  const game = await getGameStateResponse()
 
   res.json({
     status: 'ok',
-    game: getGameState(),
-    players: allPlayers,
+    game,
+    players: players.map((player) => ({
+      id: player.id,
+      telegramId: player.telegramId,
+      username: player.username,
+      firstName: player.firstName,
+      balance: player.balance,
+      clickProfit: player.clickProfit,
+      hourlyProfit: player.hourlyProfit,
+      upgradeLevels: {
+        smallBone: player.smallBoneLevel,
+        bigBone: player.bigBoneLevel,
+        autoFarm1: player.autoFarm1Level,
+        autoFarm2: player.autoFarm2Level,
+      },
+      createdAt: player.createdAt,
+      updatedAt: player.updatedAt,
+    })),
   })
 })
 
-app.get('/api/players/summary', (_req, res) => {
-  const allPlayers = Array.from(players.values())
-  const totalBalance = allPlayers.reduce((sum, player) => {
+app.get('/api/players/summary', async (_req, res) => {
+  const players = await prisma.player.findMany()
+  const game = await getGameStateResponse()
+
+  const totalBalance = players.reduce((sum, player) => {
     return sum + player.balance
   }, 0)
 
   res.json({
     status: 'ok',
-    game: getGameState(),
-    playersCount: allPlayers.length,
+    game,
+    playersCount: players.length,
     totalBalance,
-    rewardPool: REWARD_POOL,
+    rewardPool: game.rewardPool,
     updatedAt: new Date().toISOString(),
   })
 })
 
-app.get('/api/rewards/preview', (_req, res) => {
-  const preview = calculateRewards()
+app.get('/api/rewards/preview', async (_req, res) => {
+  const preview = await calculateRewards()
+  const game = await getGameStateResponse()
 
   res.json({
     status: 'ok',
-    game: getGameState(),
+    game,
     rewardPool: preview.rewardPool,
     playersCount: preview.playersCount,
     totalBalance: preview.totalBalance,
@@ -360,53 +400,144 @@ app.get('/api/rewards/preview', (_req, res) => {
 })
 
 app.post('/api/rewards/finalize', async (_req, res) => {
-  if (getGameStatus() !== 'finished') {
+  const gameState = await getOrCreateGameState()
+
+  if (getGameStatus(gameState.gameEndsAt) !== 'finished') {
+    const game = await getGameStateResponse()
+
     res.status(400).json({
       error: 'game is still active',
-      game: getGameState(),
+      game,
     })
     return
   }
 
-  if (finalizedRewards) {
+  const existingFinalRewards = await prisma.finalReward.findMany({
+    orderBy: {
+      rewardAmount: 'desc',
+    },
+  })
+
+  if (existingFinalRewards.length > 0 && gameState.finalizedAt) {
+    const game = await getGameStateResponse()
+
     res.json({
       status: 'ok',
       alreadyFinalized: true,
-      game: getGameState(),
-      finalRewards: finalizedRewards,
+      game,
+      finalRewards: {
+        rewardPool: gameState.rewardPool,
+        playersCount: existingFinalRewards.length,
+        totalBalance: existingFinalRewards.reduce((sum, reward) => {
+          return sum + reward.finalBalance
+        }, 0),
+        rewards: existingFinalRewards.map((reward) => ({
+          playerId: reward.playerId,
+          telegramId: reward.telegramId,
+          username: reward.username,
+          firstName: reward.firstName,
+          finalBalance: reward.finalBalance,
+          sharePercent: reward.sharePercent,
+          rewardAmount: reward.rewardAmount,
+          promoCode: reward.promoCode,
+        })),
+        finalizedAt: gameState.finalizedAt.toISOString(),
+      },
     })
     return
   }
 
-  finalizedRewards = calculateRewards()
-  await saveDatabase()
+  const calculatedRewards = await calculateRewards()
+  const finalizedAt = new Date()
+
+  await prisma.$transaction([
+    prisma.finalReward.deleteMany(),
+    ...calculatedRewards.rewards.map((reward) =>
+      prisma.finalReward.create({
+        data: {
+          id: reward.playerId,
+          playerId: reward.playerId,
+          telegramId: reward.telegramId,
+          username: reward.username,
+          firstName: reward.firstName,
+          finalBalance: reward.finalBalance,
+          sharePercent: reward.sharePercent,
+          rewardAmount: reward.rewardAmount,
+          promoCode: reward.promoCode,
+          finalizedAt,
+        },
+      }),
+    ),
+    prisma.gameState.update({
+      where: {
+        id: GAME_STATE_ID,
+      },
+      data: {
+        finalizedAt,
+      },
+    }),
+  ])
+
+  const game = await getGameStateResponse()
 
   res.json({
     status: 'ok',
     alreadyFinalized: false,
-    game: getGameState(),
-    finalRewards: finalizedRewards,
+    game,
+    finalRewards: {
+      ...calculatedRewards,
+      finalizedAt: finalizedAt.toISOString(),
+    },
   })
 })
 
-app.get('/api/rewards/final', (_req, res) => {
-  if (!finalizedRewards) {
+app.get('/api/rewards/final', async (_req, res) => {
+  const gameState = await getOrCreateGameState()
+
+  if (!gameState.finalizedAt) {
+    const game = await getGameStateResponse()
+
     res.status(404).json({
       error: 'rewards are not finalized yet',
-      game: getGameState(),
+      game,
     })
     return
   }
 
+  const rewards = await prisma.finalReward.findMany({
+    orderBy: {
+      rewardAmount: 'desc',
+    },
+  })
+
+  const game = await getGameStateResponse()
+
   res.json({
     status: 'ok',
-    game: getGameState(),
-    finalRewards: finalizedRewards,
+    game,
+    finalRewards: {
+      rewardPool: gameState.rewardPool,
+      playersCount: rewards.length,
+      totalBalance: rewards.reduce((sum, reward) => {
+        return sum + reward.finalBalance
+      }, 0),
+      rewards: rewards.map((reward) => ({
+        playerId: reward.playerId,
+        telegramId: reward.telegramId,
+        username: reward.username,
+        firstName: reward.firstName,
+        finalBalance: reward.finalBalance,
+        sharePercent: reward.sharePercent,
+        rewardAmount: reward.rewardAmount,
+        promoCode: reward.promoCode,
+      })),
+      finalizedAt: gameState.finalizedAt.toISOString(),
+    },
   })
 })
 
 async function startServer() {
-  await loadDatabase()
+  await getOrCreateGameState()
 
   app.listen(PORT, () => {
     console.log(`Miners Empire backend is running on http://localhost:${PORT}`)
@@ -416,4 +547,14 @@ async function startServer() {
 startServer().catch((error) => {
   console.error('Failed to start backend:', error)
   process.exit(1)
+})
+
+process.on('SIGINT', async () => {
+  await prisma.$disconnect()
+  process.exit(0)
+})
+
+process.on('SIGTERM', async () => {
+  await prisma.$disconnect()
+  process.exit(0)
 })

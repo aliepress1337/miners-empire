@@ -1,0 +1,51 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model GameState {
+  id            String   @id
+  gameStartedAt DateTime
+  gameEndsAt    DateTime
+  rewardPool    Int      @default(20)
+  finalizedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Player {
+  id              String   @id
+  telegramId      String?  @unique
+  username        String?
+  firstName       String?
+  balance         Int      @default(0)
+  clickProfit     Int      @default(1)
+  hourlyProfit    Int      @default(0)
+  smallBoneLevel  Int      @default(0)
+  bigBoneLevel    Int      @default(0)
+  autoFarm1Level  Int      @default(0)
+  autoFarm2Level  Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  finalReward FinalReward?
+}
+
+model FinalReward {
+  id            String   @id
+  playerId      String   @unique
+  telegramId    String?
+  username      String?
+  firstName     String?
+  finalBalance  Int
+  sharePercent  Float
+  rewardAmount  Float
+  promoCode     String
+  finalizedAt   DateTime
+
+  player Player @relation(fields: [playerId], references: [id])
+}
