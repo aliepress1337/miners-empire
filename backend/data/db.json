@@ -1,0 +1,24 @@
+{
+  "gameStartedAt": 1778250435215,
+  "gameEndsAt": 1778855235215,
+  "players": [
+    {
+      "id": "browser:beta-user",
+      "telegramId": null,
+      "username": null,
+      "firstName": null,
+      "balance": 5,
+      "clickProfit": 1,
+      "hourlyProfit": 0,
+      "upgradeLevels": {
+        "smallBone": 0,
+        "bigBone": 0,
+        "autoFarm1": 0,
+        "autoFarm2": 0
+      },
+      "createdAt": "2026-05-08T14:27:35.839Z",
+      "updatedAt": "2026-05-08T14:34:34.487Z"
+    }
+  ],
+  "finalizedRewards": null
+}

@@ -570,3 +570,15 @@ button {
   }
 }
 
+.final-refresh-button {
+  width: 100%;
+  margin-top: 14px;
+  border: 2px solid #8c4d20;
+  border-radius: 8px;
+  background: #efa623;
+  color: #fff;
+  padding: 10px 12px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+}

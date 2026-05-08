@@ -2,6 +2,15 @@ import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 
 import {
+  getFinalRewards,
+  getGameState,
+  syncPlayerProgress,
+  type FinalRewardsDto,
+  type GameStateDto,
+  type PlayerRewardDto,
+} from './api'
+
+import {
   getTelegramStartParam,
   getTelegramUser,
   initTelegramMiniApp,
@@ -236,7 +245,7 @@ function loadSavedGame(): GameSave {
   }
 }
 
-function generatePromoCode(balance: number) {
+function generateLocalPromoCode(balance: number) {
   const safeBalance = Math.max(Math.floor(balance), 0)
   return `TSUTSIK-${safeBalance}-BETA`
 }
@@ -265,6 +274,29 @@ function getTelegramDisplayName(telegramUser: TelegramUser | null) {
   return telegramUser.firstName
 }
 
+function findMyReward(
+  finalRewards: FinalRewardsDto | null,
+  telegramUser: TelegramUser | null,
+): PlayerRewardDto | null {
+  if (!finalRewards) {
+    return null
+  }
+
+  if (telegramUser) {
+    return (
+      finalRewards.rewards.find(
+        (reward) => reward.telegramId === telegramUser.id,
+      ) ?? null
+    )
+  }
+
+  return (
+    finalRewards.rewards.find(
+      (reward) => reward.playerId === 'browser:beta-user',
+    ) ?? null
+  )
+}
+
 function App() {
   const savedGame = useMemo(() => loadSavedGame(), [])
 
@@ -282,17 +314,57 @@ function App() {
   const [telegramStartParam, setTelegramStartParam] = useState<string | null>(
     null,
   )
+  const [syncStatus, setSyncStatus] = useState('Not synced yet')
+  const [syncing, setSyncing] = useState(false)
+
+  const [serverGame, setServerGame] = useState<GameStateDto | null>(null)
+  const [serverStatusText, setServerStatusText] = useState('Checking backend...')
+  const [finalRewards, setFinalRewards] = useState<FinalRewardsDto | null>(null)
 
   const displayedBalance = Math.floor(balance)
   const maxLevel = LEVELS.length
-  const isGameFinished = currentTime >= gameEndsAt
+
+  const localGameFinished = currentTime >= gameEndsAt
+  const serverGameFinished = serverGame?.status === 'finished'
+  const isGameFinished = serverGame ? serverGameFinished : localGameFinished
+
   const referralLink = getReferralLink(telegramUser)
+  const myReward = findMyReward(finalRewards, telegramUser)
 
   useEffect(() => {
     initTelegramMiniApp()
     setTelegramUser(getTelegramUser())
     setTelegramMode(isOpenedInTelegram())
     setTelegramStartParam(getTelegramStartParam())
+  }, [])
+
+  useEffect(() => {
+    async function loadBackendGameState() {
+      try {
+        const response = await getGameState()
+
+        setServerGame(response.game)
+        setServerStatusText(`Backend game: ${response.game.status}`)
+
+        if (response.game.status === 'finished') {
+          try {
+            const finalRewardsResponse = await getFinalRewards()
+
+            setFinalRewards(finalRewardsResponse.finalRewards)
+            setServerStatusText('Backend game: finished, rewards loaded')
+          } catch {
+            setServerStatusText('Backend game: finished, rewards not finalized')
+          }
+        } else {
+          setFinalRewards(null)
+        }
+      } catch {
+        setServerGame(null)
+        setServerStatusText('Backend unavailable, local beta mode')
+      }
+    }
+
+    loadBackendGameState()
   }, [])
 
   useEffect(() => {
@@ -414,6 +486,60 @@ function App() {
     }
   }
 
+  async function syncWithBackend() {
+    setSyncing(true)
+    setSyncStatus('Syncing...')
+
+    try {
+      const response = await syncPlayerProgress({
+        telegramUser,
+        balance: displayedBalance,
+        clickProfit,
+        hourlyProfit,
+        upgradeLevels,
+      })
+
+      if (response.game) {
+        setServerGame(response.game)
+      }
+
+      setSyncStatus(`Synced successfully: ${new Date().toLocaleTimeString()}`)
+    } catch (error) {
+      console.error(error)
+      setSyncStatus('Sync failed. Check backend and console.')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  async function refreshBackendState() {
+    setServerStatusText('Refreshing backend...')
+
+    try {
+      const response = await getGameState()
+
+      setServerGame(response.game)
+      setServerStatusText(`Backend game: ${response.game.status}`)
+
+      if (response.game.status === 'finished') {
+        try {
+          const finalRewardsResponse = await getFinalRewards()
+
+          setFinalRewards(finalRewardsResponse.finalRewards)
+          setServerStatusText('Backend game: finished, rewards loaded')
+        } catch {
+          setFinalRewards(null)
+          setServerStatusText('Backend game: finished, rewards not finalized')
+        }
+      } else {
+        setFinalRewards(null)
+      }
+    } catch {
+      setServerGame(null)
+      setServerStatusText('Backend unavailable, local beta mode')
+    }
+  }
+
   async function copyReferralLink() {
     try {
       await navigator.clipboard.writeText(referralLink)
@@ -439,12 +565,10 @@ function App() {
     setGameStartedAt(newSave.gameStartedAt)
     setGameEndsAt(newSave.gameEndsAt)
     setCurrentTime(Date.now())
-    setActiveTab('clicker')
-  }
-
-  function finishGameForTest() {
-    setGameEndsAt(Date.now())
-    setCurrentTime(Date.now())
+    setSyncStatus('Not synced yet')
+    setFinalRewards(null)
+    setServerGame(null)
+    setServerStatusText('Checking backend...')
     setActiveTab('clicker')
   }
 
@@ -481,23 +605,50 @@ function App() {
 
             <div className="final-row">
               <span>Твой баланс:</span>
-              <strong>{displayedBalance}</strong>
+              <strong>{myReward?.finalBalance ?? displayedBalance}</strong>
             </div>
 
             <div className="final-row">
               <span>Reward pool:</span>
-              <strong>20 virtual points</strong>
+              <strong>{finalRewards?.rewardPool ?? 20} virtual points</strong>
+            </div>
+
+            <div className="final-row">
+              <span>Твоя доля:</span>
+              <strong>
+                {myReward ? `${myReward.sharePercent}%` : 'ожидает backend'}
+              </strong>
+            </div>
+
+            <div className="final-row">
+              <span>Твоя награда:</span>
+              <strong>
+                {myReward
+                  ? `${myReward.rewardAmount} virtual points`
+                  : 'ожидает backend'}
+              </strong>
             </div>
 
             <div className="final-row">
               <span>Промокод:</span>
-              <strong>{generatePromoCode(displayedBalance)}</strong>
+              <strong>
+                {myReward?.promoCode ?? generateLocalPromoCode(displayedBalance)}
+              </strong>
             </div>
 
             <p className="final-note">
-              Это локальная beta-версия. В настоящей версии backend рассчитает
-              долю от балансов всех игроков в момент окончания события.
+              {serverGameFinished
+                ? serverStatusText
+                : 'Локальная beta-версия. Backend ещё не завершил событие.'}
             </p>
+
+            <button
+              className="final-refresh-button"
+              type="button"
+              onClick={refreshBackendState}
+            >
+              Обновить статус
+            </button>
           </section>
         )}
 
@@ -610,6 +761,11 @@ function App() {
                   <b>{telegramStartParam}</b>
                 </div>
               )}
+
+              <div className="telegram-status-row">
+                <span>Backend:</span>
+                <b>{serverStatusText}</b>
+              </div>
             </div>
 
             <div className="referral-main-card">
@@ -659,21 +815,32 @@ function App() {
 
             <div className="upgrade-card">
               <div>
-                <strong>Coming soon</strong>
-                <span>Донат и платные наборы добавим позже.</span>
+                <strong>Backend sync test</strong>
+                <span>{syncStatus}</span>
+                <span>Отправляет текущий прогресс на backend.</span>
               </div>
-              <button type="button" disabled>
-                Скоро
+              <button type="button" onClick={syncWithBackend} disabled={syncing}>
+                {syncing ? 'Syncing...' : 'Sync'}
               </button>
             </div>
 
             <div className="upgrade-card">
               <div>
-                <strong>Finish game for test</strong>
-                <span>Только для проверки финального экрана.</span>
+                <strong>Backend state</strong>
+                <span>{serverStatusText}</span>
               </div>
-              <button type="button" onClick={finishGameForTest}>
-                Завершить
+              <button type="button" onClick={refreshBackendState}>
+                Refresh
+              </button>
+            </div>
+
+            <div className="upgrade-card">
+              <div>
+                <strong>Coming soon</strong>
+                <span>Донат и платные наборы добавим позже.</span>
+              </div>
+              <button type="button" disabled>
+                Скоро
               </button>
             </div>
 
