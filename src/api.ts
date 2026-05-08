@@ -22,6 +22,15 @@ export type PlayerDto = {
   updatedAt: string
 }
 
+export type ReferralDto = {
+  id: string
+  telegramId: string | null
+  username: string | null
+  firstName: string | null
+  balance: number
+  createdAt: string
+}
+
 export type PlayerSyncPayload = {
   telegramUser: TelegramUser | null
   startParam: string | null
@@ -105,6 +114,28 @@ export async function getCurrentPlayer(telegramUser: TelegramUser | null) {
     status: 'ok'
     game: GameStateDto
     player: PlayerDto | null
+  }>(response)
+}
+
+export async function getPlayerReferrals(telegramUser: TelegramUser | null) {
+  const params = new URLSearchParams()
+
+  if (telegramUser?.id) {
+    params.set('telegramId', String(telegramUser.id))
+  }
+
+  const query = params.toString()
+  const url = query
+    ? `${API_BASE_URL}/api/player/referrals?${query}`
+    : `${API_BASE_URL}/api/player/referrals`
+
+  const response = await fetch(url)
+
+  return parseJsonResponse<{
+    status: 'ok'
+    referrals: ReferralDto[]
+    count: number
+    joinBonus: number
   }>(response)
 }
 

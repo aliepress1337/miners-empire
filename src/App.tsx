@@ -5,10 +5,12 @@ import {
   getCurrentPlayer,
   getFinalRewards,
   getGameState,
+  getPlayerReferrals,
   syncPlayerProgress,
   type FinalRewardsDto,
   type GameStateDto,
   type PlayerRewardDto,
+  type ReferralDto,
 } from './api'
 
 import {
@@ -276,6 +278,22 @@ function getTelegramDisplayName(telegramUser: TelegramUser | null) {
   return telegramUser.firstName
 }
 
+function getReferralDisplayName(referral: ReferralDto) {
+  if (referral.username) {
+    return `@${referral.username}`
+  }
+
+  if (referral.firstName) {
+    return referral.firstName
+  }
+
+  if (referral.telegramId) {
+    return `ID ${referral.telegramId}`
+  }
+
+  return referral.id
+}
+
 function findMyReward(
   finalRewards: FinalRewardsDto | null,
   telegramUser: TelegramUser | null,
@@ -322,6 +340,9 @@ function App() {
   const [serverStatusText, setServerStatusText] = useState('Checking backend...')
   const [finalRewards, setFinalRewards] = useState<FinalRewardsDto | null>(null)
   const [backendPlayerLoaded, setBackendPlayerLoaded] = useState(false)
+  const [referrals, setReferrals] = useState<ReferralDto[]>([])
+  const [referralsCount, setReferralsCount] = useState(0)
+  const [referralJoinBonus, setReferralJoinBonus] = useState(500)
 
   const displayedBalance = Math.floor(balance)
   const maxLevel = LEVELS.length
@@ -332,6 +353,20 @@ function App() {
 
   const referralLink = getReferralLink(telegramUser)
   const myReward = findMyReward(finalRewards, telegramUser)
+
+  async function loadReferrals(currentTelegramUser: TelegramUser | null) {
+    try {
+      const referralsResponse = await getPlayerReferrals(currentTelegramUser)
+
+      setReferrals(referralsResponse.referrals)
+      setReferralsCount(referralsResponse.count)
+      setReferralJoinBonus(referralsResponse.joinBonus)
+    } catch (error) {
+      console.error('Failed to load referrals:', error)
+      setReferrals([])
+      setReferralsCount(0)
+    }
+  }
 
   useEffect(() => {
     async function initApp() {
@@ -356,6 +391,8 @@ function App() {
           setHourlyProfit(currentPlayerResponse.player.hourlyProfit)
           setUpgradeLevels(currentPlayerResponse.player.upgradeLevels)
         }
+
+        await loadReferrals(currentTelegramUser)
 
         if (currentPlayerResponse.game.status === 'finished') {
           try {
@@ -452,6 +489,8 @@ function App() {
           setHourlyProfit(response.player.hourlyProfit)
           setUpgradeLevels(response.player.upgradeLevels)
         }
+
+        await loadReferrals(telegramUser)
       } catch (error) {
         console.error('Auto sync failed:', error)
         setServerStatusText('Backend sync failed')
@@ -553,6 +592,8 @@ function App() {
 
       setServerGame(response.game)
       setServerStatusText(`Backend game: ${response.game.status}`)
+
+      await loadReferrals(telegramUser)
 
       if (response.game.status === 'finished') {
         try {
@@ -794,23 +835,32 @@ function App() {
 
             <div className="bonus-grid">
               <div className="bonus-card">
-                <strong>+500</strong>
+                <strong>+{referralJoinBonus}</strong>
                 <span>монет за друга</span>
               </div>
 
               <div className="bonus-card">
-                <strong>+5%</strong>
-                <span>от фарма друга</span>
+                <strong>{referralsCount}</strong>
+                <span>друзей приглашено</span>
               </div>
             </div>
 
             <div className="friends-list-card">
               <strong>Приглашённые друзья</strong>
 
-              <div className="friend-row">
-                <span>Пока друзей нет</span>
-                <small>Поделись ссылкой</small>
-              </div>
+              {referrals.length === 0 && (
+                <div className="friend-row">
+                  <span>Пока друзей нет</span>
+                  <small>Поделись ссылкой</small>
+                </div>
+              )}
+
+              {referrals.map((referral) => (
+                <div className="friend-row" key={referral.id}>
+                  <span>{getReferralDisplayName(referral)}</span>
+                  <small>{referral.balance} coins</small>
+                </div>
+              ))}
             </div>
           </section>
         )}
