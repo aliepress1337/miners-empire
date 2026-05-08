@@ -25,7 +25,7 @@ button {
   min-height: 100vh;
   margin: 0 auto;
   position: relative;
-  overflow: hidden;
+  overflow-x: hidden;
   background-size: 250px;
   background-repeat: repeat;
   background-position: center;
@@ -475,3 +475,98 @@ button {
   text-align: right;
   word-break: break-word;
 }
+
+@media (max-height: 760px) {
+  .game-screen {
+    padding-top: 26px;
+    padding-bottom: 96px;
+  }
+
+  .top-stats {
+    margin-bottom: 22px;
+  }
+
+  .stat-card {
+    min-height: 58px;
+    font-size: 18px;
+  }
+
+  .balance-row {
+    margin-bottom: 10px;
+  }
+
+  .small-coin {
+    width: 48px;
+    height: 48px;
+  }
+
+  .balance {
+    font-size: 48px;
+  }
+
+  .level-info {
+    margin-bottom: 8px;
+    font-size: 20px;
+  }
+
+  .progress-bar {
+    height: 25px;
+  }
+
+  .dog-button-wrapper {
+    margin-top: 26px;
+  }
+
+  .dog-button {
+    width: 285px;
+    height: 285px;
+  }
+
+  .bottom-nav {
+    height: 82px;
+  }
+
+  .nav-item {
+    height: 66px;
+  }
+}
+
+@media (max-height: 680px) {
+  .game-screen {
+    padding-top: 18px;
+  }
+
+  .top-stats {
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+
+  .stat-card {
+    min-height: 54px;
+    font-size: 16px;
+  }
+
+  .dog-button-wrapper {
+    margin-top: 20px;
+  }
+
+  .dog-button {
+    width: 250px;
+    height: 250px;
+  }
+
+  .bottom-nav {
+    height: 76px;
+  }
+
+  .nav-item {
+    height: 60px;
+    font-size: 14px;
+  }
+
+  .nav-item img {
+    width: 26px;
+    height: 26px;
+  }
+}
+
