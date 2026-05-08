@@ -338,10 +338,11 @@ function App() {
       initTelegramMiniApp()
 
       const currentTelegramUser = getTelegramUser()
+      const currentStartParam = getTelegramStartParam()
 
       setTelegramUser(currentTelegramUser)
       setTelegramMode(isOpenedInTelegram())
-      setTelegramStartParam(getTelegramStartParam())
+      setTelegramStartParam(currentStartParam)
 
       try {
         const currentPlayerResponse = await getCurrentPlayer(currentTelegramUser)
@@ -433,6 +434,7 @@ function App() {
       try {
         const response = await syncPlayerProgress({
           telegramUser,
+          startParam: telegramStartParam,
           balance: displayedBalance,
           clickProfit,
           hourlyProfit,
@@ -442,6 +444,13 @@ function App() {
         if (response.game) {
           setServerGame(response.game)
           setServerStatusText(`Backend game: ${response.game.status}`)
+        }
+
+        if (response.player) {
+          setBalance(response.player.balance)
+          setClickProfit(response.player.clickProfit)
+          setHourlyProfit(response.player.hourlyProfit)
+          setUpgradeLevels(response.player.upgradeLevels)
         }
       } catch (error) {
         console.error('Auto sync failed:', error)
@@ -459,6 +468,7 @@ function App() {
     hourlyProfit,
     upgradeLevels,
     telegramUser,
+    telegramStartParam,
     isGameFinished,
     serverGame?.status,
   ])

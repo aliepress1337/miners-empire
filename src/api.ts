@@ -16,12 +16,15 @@ export type PlayerDto = {
   clickProfit: number
   hourlyProfit: number
   upgradeLevels: UpgradeLevelsDto
+  referrerId?: string | null
+  referralBonusClaimed?: boolean
   createdAt: string
   updatedAt: string
 }
 
 export type PlayerSyncPayload = {
   telegramUser: TelegramUser | null
+  startParam: string | null
   balance: number
   clickProfit: number
   hourlyProfit: number
@@ -115,6 +118,7 @@ export async function syncPlayerProgress(payload: PlayerSyncPayload) {
       telegramId: payload.telegramUser?.id,
       username: payload.telegramUser?.username,
       firstName: payload.telegramUser?.firstName,
+      startParam: payload.startParam,
       balance: payload.balance,
       clickProfit: payload.clickProfit,
       hourlyProfit: payload.hourlyProfit,
