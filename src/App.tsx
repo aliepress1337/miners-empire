@@ -77,6 +77,7 @@ const GAME_DURATION_MS = GAME_DURATION_DAYS * 24 * 60 * 60 * 1000
 const OFFLINE_HOURLY_MULTIPLIER = 0.5
 const ONLINE_HOURLY_MULTIPLIER = 1
 const PRICE_GROWTH = 1.5
+const AUTO_SYNC_DELAY_MS = 2500
 
 const BOT_USERNAME = 'MinersEmpire_bot'
 
@@ -305,17 +306,16 @@ function App() {
   const [clickProfit, setClickProfit] = useState(savedGame.clickProfit)
   const [hourlyProfit, setHourlyProfit] = useState(savedGame.hourlyProfit)
   const [upgradeLevels, setUpgradeLevels] = useState(savedGame.upgradeLevels)
-  const [gameStartedAt, setGameStartedAt] = useState(savedGame.gameStartedAt)
-  const [gameEndsAt, setGameEndsAt] = useState(savedGame.gameEndsAt)
+  const [gameStartedAt] = useState(savedGame.gameStartedAt)
+  const [gameEndsAt] = useState(savedGame.gameEndsAt)
   const [currentTime, setCurrentTime] = useState(Date.now())
   const [referralCopied, setReferralCopied] = useState(false)
+
   const [telegramUser, setTelegramUser] = useState<TelegramUser | null>(null)
   const [telegramMode, setTelegramMode] = useState(false)
   const [telegramStartParam, setTelegramStartParam] = useState<string | null>(
     null,
   )
-  const [syncStatus, setSyncStatus] = useState('Not synced yet')
-  const [syncing, setSyncing] = useState(false)
 
   const [serverGame, setServerGame] = useState<GameStateDto | null>(null)
   const [serverStatusText, setServerStatusText] = useState('Checking backend...')
@@ -389,14 +389,7 @@ function App() {
     }
 
     localStorage.setItem(SAVE_KEY, JSON.stringify(save))
-  }, [
-    balance,
-    clickProfit,
-    hourlyProfit,
-    upgradeLevels,
-    gameStartedAt,
-    gameEndsAt,
-  ])
+  }, [balance, clickProfit, hourlyProfit, upgradeLevels, gameStartedAt, gameEndsAt])
 
   useEffect(() => {
     if (hourlyProfit <= 0 || isGameFinished) {
@@ -413,6 +406,44 @@ function App() {
       window.clearInterval(intervalId)
     }
   }, [hourlyProfit, isGameFinished])
+
+  useEffect(() => {
+    if (isGameFinished || serverGame?.status !== 'active') {
+      return
+    }
+
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const response = await syncPlayerProgress({
+          telegramUser,
+          balance: displayedBalance,
+          clickProfit,
+          hourlyProfit,
+          upgradeLevels,
+        })
+
+        if (response.game) {
+          setServerGame(response.game)
+          setServerStatusText(`Backend game: ${response.game.status}`)
+        }
+      } catch (error) {
+        console.error('Auto sync failed:', error)
+        setServerStatusText('Backend sync failed')
+      }
+    }, AUTO_SYNC_DELAY_MS)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [
+    displayedBalance,
+    clickProfit,
+    hourlyProfit,
+    upgradeLevels,
+    telegramUser,
+    isGameFinished,
+    serverGame?.status,
+  ])
 
   const currentLevel = useMemo(() => {
     const reversedLevels = [...LEVELS].reverse()
@@ -486,32 +517,6 @@ function App() {
     }
   }
 
-  async function syncWithBackend() {
-    setSyncing(true)
-    setSyncStatus('Syncing...')
-
-    try {
-      const response = await syncPlayerProgress({
-        telegramUser,
-        balance: displayedBalance,
-        clickProfit,
-        hourlyProfit,
-        upgradeLevels,
-      })
-
-      if (response.game) {
-        setServerGame(response.game)
-      }
-
-      setSyncStatus(`Synced successfully: ${new Date().toLocaleTimeString()}`)
-    } catch (error) {
-      console.error(error)
-      setSyncStatus('Sync failed. Check backend and console.')
-    } finally {
-      setSyncing(false)
-    }
-  }
-
   async function refreshBackendState() {
     setServerStatusText('Refreshing backend...')
 
@@ -551,25 +556,6 @@ function App() {
     } catch {
       setReferralCopied(false)
     }
-  }
-
-  function resetProgress() {
-    const newSave = createDefaultSave()
-
-    localStorage.removeItem(SAVE_KEY)
-
-    setBalance(newSave.balance)
-    setClickProfit(newSave.clickProfit)
-    setHourlyProfit(newSave.hourlyProfit)
-    setUpgradeLevels(newSave.upgradeLevels)
-    setGameStartedAt(newSave.gameStartedAt)
-    setGameEndsAt(newSave.gameEndsAt)
-    setCurrentTime(Date.now())
-    setSyncStatus('Not synced yet')
-    setFinalRewards(null)
-    setServerGame(null)
-    setServerStatusText('Checking backend...')
-    setActiveTab('clicker')
   }
 
   return (
@@ -815,42 +801,11 @@ function App() {
 
             <div className="upgrade-card">
               <div>
-                <strong>Backend sync test</strong>
-                <span>{syncStatus}</span>
-                <span>Отправляет текущий прогресс на backend.</span>
-              </div>
-              <button type="button" onClick={syncWithBackend} disabled={syncing}>
-                {syncing ? 'Syncing...' : 'Sync'}
-              </button>
-            </div>
-
-            <div className="upgrade-card">
-              <div>
-                <strong>Backend state</strong>
-                <span>{serverStatusText}</span>
-              </div>
-              <button type="button" onClick={refreshBackendState}>
-                Refresh
-              </button>
-            </div>
-
-            <div className="upgrade-card">
-              <div>
                 <strong>Coming soon</strong>
                 <span>Донат и платные наборы добавим позже.</span>
               </div>
               <button type="button" disabled>
                 Скоро
-              </button>
-            </div>
-
-            <div className="upgrade-card">
-              <div>
-                <strong>Reset beta progress</strong>
-                <span>Только для теста. Потом уберём.</span>
-              </div>
-              <button type="button" onClick={resetProgress}>
-                Сбросить
               </button>
             </div>
           </section>
