@@ -31,6 +31,23 @@ export type ReferralDto = {
   createdAt: string
 }
 
+export type LeaderboardPlayerDto = {
+  rank: number
+  id: string
+  telegramId: string | null
+  username: string | null
+  firstName: string | null
+  displayName: string
+  balance: number
+}
+
+export type LeaderboardDto = {
+  status: 'ok'
+  playersCount: number
+  leaderboard: LeaderboardPlayerDto[]
+  currentPlayer: LeaderboardPlayerDto | null
+}
+
 export type PlayerSyncPayload = {
   telegramUser: TelegramUser | null
   startParam: string | null
@@ -137,6 +154,20 @@ export async function getPlayerReferrals(telegramUser: TelegramUser | null) {
     count: number
     joinBonus: number
   }>(response)
+}
+
+export async function getLeaderboard(telegramUser: TelegramUser | null) {
+  const params = new URLSearchParams()
+
+  if (telegramUser?.id) {
+    params.set('telegramId', String(telegramUser.id))
+  }
+
+  params.set('limit', '50')
+
+  const response = await fetch(`${API_BASE_URL}/api/leaderboard?${params}`)
+
+  return parseJsonResponse<LeaderboardDto>(response)
 }
 
 export async function syncPlayerProgress(payload: PlayerSyncPayload) {

@@ -5,10 +5,12 @@ import {
   getCurrentPlayer,
   getFinalRewards,
   getGameState,
+  getLeaderboard,
   getPlayerReferrals,
   syncPlayerProgress,
   type FinalRewardsDto,
   type GameStateDto,
+  type LeaderboardPlayerDto,
   type PlayerRewardDto,
   type ReferralDto,
 } from './api'
@@ -340,9 +342,15 @@ function App() {
   const [serverStatusText, setServerStatusText] = useState('Checking backend...')
   const [finalRewards, setFinalRewards] = useState<FinalRewardsDto | null>(null)
   const [backendPlayerLoaded, setBackendPlayerLoaded] = useState(false)
+
   const [referrals, setReferrals] = useState<ReferralDto[]>([])
   const [referralsCount, setReferralsCount] = useState(0)
   const [referralJoinBonus, setReferralJoinBonus] = useState(500)
+
+  const [leaderboard, setLeaderboard] = useState<LeaderboardPlayerDto[]>([])
+  const [currentLeaderboardPlayer, setCurrentLeaderboardPlayer] =
+    useState<LeaderboardPlayerDto | null>(null)
+  const [playersCount, setPlayersCount] = useState(0)
 
   const displayedBalance = Math.floor(balance)
   const maxLevel = LEVELS.length
@@ -353,6 +361,10 @@ function App() {
 
   const referralLink = getReferralLink(telegramUser)
   const myReward = findMyReward(finalRewards, telegramUser)
+
+  const ratingText = currentLeaderboardPlayer
+    ? `#${currentLeaderboardPlayer.rank}`
+    : '...'
 
   async function loadReferrals(currentTelegramUser: TelegramUser | null) {
     try {
@@ -365,6 +377,21 @@ function App() {
       console.error('Failed to load referrals:', error)
       setReferrals([])
       setReferralsCount(0)
+    }
+  }
+
+  async function loadLeaderboard(currentTelegramUser: TelegramUser | null) {
+    try {
+      const leaderboardResponse = await getLeaderboard(currentTelegramUser)
+
+      setLeaderboard(leaderboardResponse.leaderboard)
+      setCurrentLeaderboardPlayer(leaderboardResponse.currentPlayer)
+      setPlayersCount(leaderboardResponse.playersCount)
+    } catch (error) {
+      console.error('Failed to load leaderboard:', error)
+      setLeaderboard([])
+      setCurrentLeaderboardPlayer(null)
+      setPlayersCount(0)
     }
   }
 
@@ -393,6 +420,7 @@ function App() {
         }
 
         await loadReferrals(currentTelegramUser)
+        await loadLeaderboard(currentTelegramUser)
 
         if (currentPlayerResponse.game.status === 'finished') {
           try {
@@ -491,6 +519,7 @@ function App() {
         }
 
         await loadReferrals(telegramUser)
+        await loadLeaderboard(telegramUser)
       } catch (error) {
         console.error('Auto sync failed:', error)
         setServerStatusText('Backend sync failed')
@@ -594,6 +623,7 @@ function App() {
       setServerStatusText(`Backend game: ${response.game.status}`)
 
       await loadReferrals(telegramUser)
+      await loadLeaderboard(telegramUser)
 
       if (response.game.status === 'finished') {
         try {
@@ -638,7 +668,7 @@ function App() {
 
           <div className="stat-card">
             <span>Рейтинг</span>
-            <span>10000+</span>
+            <span>{ratingText}</span>
           </div>
 
           <div className="stat-card">
@@ -868,7 +898,27 @@ function App() {
         {!isGameFinished && activeTab === 'earn' && (
           <section className="tab-screen">
             <h1>Earn</h1>
-            <p>Заданий пока не будет. Этот экран оставим под будущие бонусы.</p>
+            <p>Топ игроков по балансу.</p>
+
+            <div className="friends-list-card">
+              <strong>Leaderboard</strong>
+
+              {leaderboard.length === 0 && (
+                <div className="friend-row">
+                  <span>Рейтинг загружается</span>
+                  <small>{playersCount} players</small>
+                </div>
+              )}
+
+              {leaderboard.map((player) => (
+                <div className="friend-row" key={player.id}>
+                  <span>
+                    #{player.rank} {player.displayName}
+                  </span>
+                  <small>{player.balance} coins</small>
+                </div>
+              ))}
+            </div>
           </section>
         )}
 
