@@ -263,7 +263,7 @@ function getReferralCode(telegramUser: TelegramUser | null) {
 }
 
 function getReferralLink(telegramUser: TelegramUser | null) {
-  return `https://t.me/${BOT_USERNAME}?start=${getReferralCode(telegramUser)}`
+  return `https://t.me/${BOT_USERNAME}?startapp=${getReferralCode(telegramUser)}`
 }
 
 function getTelegramDisplayName(telegramUser: TelegramUser | null) {
