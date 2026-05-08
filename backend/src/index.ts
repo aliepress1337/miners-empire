@@ -154,6 +154,27 @@ function playerToDto(player: {
   }
 }
 
+function getPlayerDisplayName(player: {
+  telegramId: string | null
+  username: string | null
+  firstName: string | null
+  id: string
+}) {
+  if (player.username) {
+    return `@${player.username}`
+  }
+
+  if (player.firstName) {
+    return player.firstName
+  }
+
+  if (player.telegramId) {
+    return `ID ${player.telegramId}`
+  }
+
+  return player.id
+}
+
 async function getOrCreateGameState() {
   const existingGameState = await prisma.gameState.findUnique({
     where: {
@@ -509,6 +530,56 @@ app.get('/api/player/referrals', async (req, res) => {
     })),
     count: referrals.length,
     joinBonus: REFERRAL_JOIN_BONUS,
+  })
+})
+
+app.get('/api/leaderboard', async (req, res) => {
+  const currentPlayerId = getPlayerIdFromQuery(req.query.telegramId)
+  const limit = Math.min(Number(req.query.limit) || 50, 100)
+
+  const allPlayers = await prisma.player.findMany({
+    orderBy: [
+      {
+        balance: 'desc',
+      },
+      {
+        createdAt: 'asc',
+      },
+    ],
+  })
+
+  const leaderboard = allPlayers.slice(0, limit).map((player, index) => ({
+    rank: index + 1,
+    id: player.id,
+    telegramId: player.telegramId,
+    username: player.username,
+    firstName: player.firstName,
+    displayName: getPlayerDisplayName(player),
+    balance: player.balance,
+  }))
+
+  const currentPlayerIndex = allPlayers.findIndex(
+    (player) => player.id === currentPlayerId,
+  )
+
+  const currentPlayer =
+    currentPlayerIndex >= 0
+      ? {
+          rank: currentPlayerIndex + 1,
+          id: allPlayers[currentPlayerIndex].id,
+          telegramId: allPlayers[currentPlayerIndex].telegramId,
+          username: allPlayers[currentPlayerIndex].username,
+          firstName: allPlayers[currentPlayerIndex].firstName,
+          displayName: getPlayerDisplayName(allPlayers[currentPlayerIndex]),
+          balance: allPlayers[currentPlayerIndex].balance,
+        }
+      : null
+
+  res.json({
+    status: 'ok',
+    playersCount: allPlayers.length,
+    leaderboard,
+    currentPlayer,
   })
 })
 
