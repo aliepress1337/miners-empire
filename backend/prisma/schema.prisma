@@ -29,8 +29,15 @@ model Player {
   bigBoneLevel    Int      @default(0)
   autoFarm1Level  Int      @default(0)
   autoFarm2Level  Int      @default(0)
+
+  referrerId      String?
+  referralBonusClaimed Boolean @default(false)
+
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+
+  referrer Player?  @relation("PlayerReferrals", fields: [referrerId], references: [id])
+  referrals Player[] @relation("PlayerReferrals")
 
   finalReward FinalReward?
 }

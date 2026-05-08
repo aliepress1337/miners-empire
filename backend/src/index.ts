@@ -10,6 +10,7 @@ const prisma = new PrismaClient()
 
 const PORT = Number(process.env.PORT) || 4000
 const REWARD_POOL = 20
+const REFERRAL_JOIN_BONUS = 500
 
 const GAME_STATE_ID = 'main'
 const GAME_DURATION_DAYS = 7
@@ -35,6 +36,7 @@ type PlayerSyncRequest = {
   telegramId?: number
   username?: string
   firstName?: string
+  startParam?: string | null
   balance: number
   clickProfit: number
   hourlyProfit: number
@@ -66,6 +68,26 @@ function getPlayerIdFromQuery(telegramId: unknown) {
   }
 
   return 'browser:beta-user'
+}
+
+function getReferrerIdFromStartParam(startParam: unknown) {
+  if (typeof startParam !== 'string') {
+    return null
+  }
+
+  const trimmedStartParam = startParam.trim()
+
+  if (!trimmedStartParam.startsWith('USER-')) {
+    return null
+  }
+
+  const telegramId = trimmedStartParam.replace('USER-', '').trim()
+
+  if (!telegramId) {
+    return null
+  }
+
+  return `telegram:${telegramId}`
 }
 
 function normalizeUpgradeLevels(value: unknown): UpgradeLevels | null {
@@ -106,6 +128,8 @@ function playerToDto(player: {
   bigBoneLevel: number
   autoFarm1Level: number
   autoFarm2Level: number
+  referrerId: string | null
+  referralBonusClaimed: boolean
   createdAt: Date
   updatedAt: Date
 }) {
@@ -123,6 +147,8 @@ function playerToDto(player: {
       autoFarm1: player.autoFarm1Level,
       autoFarm2: player.autoFarm2Level,
     },
+    referrerId: player.referrerId,
+    referralBonusClaimed: player.referralBonusClaimed,
     createdAt: player.createdAt,
     updatedAt: player.updatedAt,
   }
@@ -168,6 +194,67 @@ async function getGameStateResponse() {
     rewardPool: gameState.rewardPool,
     rewardsFinalized: gameState.finalizedAt !== null,
   }
+}
+
+async function applyReferralIfNeeded(options: {
+  playerId: string
+  startParam: string | null | undefined
+}) {
+  const referrerId = getReferrerIdFromStartParam(options.startParam)
+
+  if (!referrerId) {
+    return
+  }
+
+  if (referrerId === options.playerId) {
+    return
+  }
+
+  const invitedPlayer = await prisma.player.findUnique({
+    where: {
+      id: options.playerId,
+    },
+  })
+
+  if (!invitedPlayer) {
+    return
+  }
+
+  if (invitedPlayer.referralBonusClaimed) {
+    return
+  }
+
+  const referrer = await prisma.player.findUnique({
+    where: {
+      id: referrerId,
+    },
+  })
+
+  if (!referrer) {
+    return
+  }
+
+  await prisma.$transaction([
+    prisma.player.update({
+      where: {
+        id: referrerId,
+      },
+      data: {
+        balance: {
+          increment: REFERRAL_JOIN_BONUS,
+        },
+      },
+    }),
+    prisma.player.update({
+      where: {
+        id: options.playerId,
+      },
+      data: {
+        referrerId,
+        referralBonusClaimed: true,
+      },
+    }),
+  ])
 }
 
 async function calculateRewards() {
@@ -376,14 +463,52 @@ app.post('/api/player/sync', async (req, res) => {
     },
   })
 
+  await applyReferralIfNeeded({
+    playerId,
+    startParam: body.startParam,
+  })
+
+  const updatedPlayer = await prisma.player.findUniqueOrThrow({
+    where: {
+      id: player.id,
+    },
+  })
+
   const game = await getGameStateResponse()
 
-  console.log('Player stored:', player)
+  console.log('Player stored:', updatedPlayer)
 
   res.json({
     status: 'ok',
     game,
-    player: playerToDto(player),
+    player: playerToDto(updatedPlayer),
+  })
+})
+
+app.get('/api/player/referrals', async (req, res) => {
+  const playerId = getPlayerIdFromQuery(req.query.telegramId)
+
+  const referrals = await prisma.player.findMany({
+    where: {
+      referrerId: playerId,
+    },
+    orderBy: {
+      createdAt: 'desc',
+    },
+  })
+
+  res.json({
+    status: 'ok',
+    referrals: referrals.map((player) => ({
+      id: player.id,
+      telegramId: player.telegramId,
+      username: player.username,
+      firstName: player.firstName,
+      balance: player.balance,
+      createdAt: player.createdAt,
+    })),
+    count: referrals.length,
+    joinBonus: REFERRAL_JOIN_BONUS,
   })
 })
 

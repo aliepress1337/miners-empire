@@ -1,0 +1,7 @@
+ALTER TABLE "Player" ADD COLUMN "referrerId" TEXT;
+ALTER TABLE "Player" ADD COLUMN "referralBonusClaimed" BOOLEAN NOT NULL DEFAULT false;
+
+ALTER TABLE "Player"
+ADD CONSTRAINT "Player_referrerId_fkey"
+FOREIGN KEY ("referrerId") REFERENCES "Player"("id")
+ON DELETE SET NULL ON UPDATE CASCADE;
