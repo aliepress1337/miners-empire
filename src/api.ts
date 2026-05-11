@@ -1,11 +1,6 @@
 import type { TelegramUser } from './telegram'
 
-export type UpgradeLevelsDto = {
-  smallBone: number
-  bigBone: number
-  autoFarm1: number
-  autoFarm2: number
-}
+export type UpgradeLevelsDto = Record<string, number>
 
 export type PlayerDto = {
   id: string
@@ -28,6 +23,7 @@ export type ReferralDto = {
   username: string | null
   firstName: string | null
   balance: number
+  hourlyProfit: number
   createdAt: string
 }
 
@@ -153,6 +149,8 @@ export async function getPlayerReferrals(telegramUser: TelegramUser | null) {
     referrals: ReferralDto[]
     count: number
     joinBonus: number
+    hourlyBonusPercent: number
+    hourlyBonus: number
   }>(response)
 }
 
@@ -216,5 +214,40 @@ export async function getRewardsPreview() {
     totalBalance: number
     rewards: PlayerRewardDto[]
     calculatedAt: string
+  }>(response)
+}
+
+export async function finishGameForTest() {
+  const response = await fetch(`${API_BASE_URL}/api/game/finish-for-test`, {
+    method: 'POST',
+  })
+
+  return parseJsonResponse<{
+    status: 'ok'
+    game: GameStateDto
+  }>(response)
+}
+
+export async function resetGameForTest() {
+  const response = await fetch(`${API_BASE_URL}/api/game/reset-for-test`, {
+    method: 'POST',
+  })
+
+  return parseJsonResponse<{
+    status: 'ok'
+    game: GameStateDto
+  }>(response)
+}
+
+export async function finalizeRewards() {
+  const response = await fetch(`${API_BASE_URL}/api/rewards/finalize`, {
+    method: 'POST',
+  })
+
+  return parseJsonResponse<{
+    status: 'ok'
+    alreadyFinalized: boolean
+    game: GameStateDto
+    finalRewards: FinalRewardsDto
   }>(response)
 }

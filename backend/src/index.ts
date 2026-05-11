@@ -10,7 +10,14 @@ const prisma = new PrismaClient()
 
 const PORT = Number(process.env.PORT) || 4000
 const REWARD_POOL = 20
-const REFERRAL_JOIN_BONUS = 500
+const REFERRAL_JOIN_BONUS = 5000
+const REFERRAL_HOURLY_BONUS_PERCENT = 0.05
+const ADMIN_TEST_ENABLED = process.env.ADMIN_TEST_ENABLED === 'true'
+const FRONTEND_ORIGINS = (process.env.FRONTEND_ORIGIN ?? '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean)
+
 
 const GAME_STATE_ID = 'main'
 const GAME_DURATION_DAYS = 7
@@ -20,8 +27,34 @@ const INITIAL_GAME_STARTED_AT = process.env.GAME_STARTED_AT
   ? new Date(process.env.GAME_STARTED_AT)
   : new Date()
 
-app.use(cors())
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || FRONTEND_ORIGINS.length === 0 || FRONTEND_ORIGINS.includes(origin)) {
+        callback(null, true)
+        return
+      }
+
+      callback(new Error(`CORS blocked origin: ${origin}`))
+    },
+  }),
+)
 app.use(express.json())
+
+function requireAdminTestMode(
+  _req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+) {
+  if (ADMIN_TEST_ENABLED) {
+    next()
+    return
+  }
+
+  res.status(403).json({
+    error: 'admin test endpoints are disabled',
+  })
+}
 
 type GameStatus = 'active' | 'finished'
 
@@ -109,6 +142,24 @@ function roundReward(value: number) {
   return Math.round(value * 1000000) / 1000000
 }
 
+function toSafeNumber(value: unknown, fallback = 0) {
+  const parsedValue = Number(value)
+
+  return Number.isFinite(parsedValue) ? parsedValue : fallback
+}
+
+function calculateReferralHourlyBonus(referrals: Array<{ hourlyProfit: number }>) {
+  const hourlyBonus = referrals.reduce((sum, referral) => {
+    return (
+      sum +
+      Math.max(0, toSafeNumber(referral.hourlyProfit, 0)) *
+        REFERRAL_HOURLY_BONUS_PERCENT
+    )
+  }, 0)
+
+  return Math.round(hourlyBonus * 10) / 10
+}
+
 function generatePromoCode(playerId: string, rewardAmount: number) {
   const safeId = playerId.replace(/[^a-zA-Z0-9]/g, '').slice(-8).toUpperCase()
   const safeReward = Math.round(rewardAmount * 1000000)
@@ -173,6 +224,13 @@ function getPlayerDisplayName(player: {
   }
 
   return player.id
+}
+
+function isRealTelegramPlayer(player: {
+  id: string
+  telegramId: string | null
+}) {
+  return Boolean(player.telegramId) && player.id.startsWith('telegram:')
 }
 
 async function getOrCreateGameState() {
@@ -282,6 +340,11 @@ async function calculateRewards() {
   const gameState = await getOrCreateGameState()
 
   const players = await prisma.player.findMany({
+    where: {
+      telegramId: {
+        not: null,
+      },
+    },
     orderBy: {
       balance: 'desc',
     },
@@ -358,7 +421,7 @@ app.get('/api/game/state', async (_req, res) => {
   })
 })
 
-app.post('/api/game/finish-for-test', async (_req, res) => {
+app.post('/api/game/finish-for-test', requireAdminTestMode, async (_req, res) => {
   await prisma.gameState.update({
     where: {
       id: GAME_STATE_ID,
@@ -367,6 +430,32 @@ app.post('/api/game/finish-for-test', async (_req, res) => {
       gameEndsAt: new Date(),
     },
   })
+
+  const game = await getGameStateResponse()
+
+  res.json({
+    status: 'ok',
+    game,
+  })
+})
+
+app.post('/api/game/reset-for-test', requireAdminTestMode, async (_req, res) => {
+  const gameStartedAt = new Date()
+  const gameEndsAt = new Date(gameStartedAt.getTime() + GAME_DURATION_MS)
+
+  await prisma.$transaction([
+    prisma.finalReward.deleteMany(),
+    prisma.gameState.update({
+      where: {
+        id: GAME_STATE_ID,
+      },
+      data: {
+        gameStartedAt,
+        gameEndsAt,
+        finalizedAt: null,
+      },
+    }),
+  ])
 
   const game = await getGameStateResponse()
 
@@ -518,6 +607,8 @@ app.get('/api/player/referrals', async (req, res) => {
     },
   })
 
+  const referralHourlyBonus = calculateReferralHourlyBonus(referrals)
+
   res.json({
     status: 'ok',
     referrals: referrals.map((player) => ({
@@ -526,10 +617,13 @@ app.get('/api/player/referrals', async (req, res) => {
       username: player.username,
       firstName: player.firstName,
       balance: player.balance,
+      hourlyProfit: player.hourlyProfit,
       createdAt: player.createdAt,
     })),
     count: referrals.length,
     joinBonus: REFERRAL_JOIN_BONUS,
+    hourlyBonusPercent: REFERRAL_HOURLY_BONUS_PERCENT * 100,
+    hourlyBonus: referralHourlyBonus,
   })
 })
 
@@ -538,6 +632,11 @@ app.get('/api/leaderboard', async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 100)
 
   const allPlayers = await prisma.player.findMany({
+    where: {
+      telegramId: {
+        not: null,
+      },
+    },
     orderBy: [
       {
         balance: 'desc',
@@ -559,7 +658,7 @@ app.get('/api/leaderboard', async (req, res) => {
   }))
 
   const currentPlayerIndex = allPlayers.findIndex(
-    (player) => player.id === currentPlayerId,
+    (player) => isRealTelegramPlayer(player) && player.id === currentPlayerId,
   )
 
   const currentPlayer =
@@ -600,7 +699,13 @@ app.get('/api/players', async (_req, res) => {
 })
 
 app.get('/api/players/summary', async (_req, res) => {
-  const players = await prisma.player.findMany()
+  const players = await prisma.player.findMany({
+    where: {
+      telegramId: {
+        not: null,
+      },
+    },
+  })
   const game = await getGameStateResponse()
 
   const totalBalance = players.reduce((sum, player) => {
@@ -773,7 +878,8 @@ async function startServer() {
   await getOrCreateGameState()
 
   app.listen(PORT, () => {
-    console.log(`Miners Empire backend is running on http://localhost:${PORT}`)
+    console.log(`Miners Empire backend is running on port ${PORT}`)
+    console.log(`Admin test endpoints enabled: ${ADMIN_TEST_ENABLED}`)
   })
 }
 

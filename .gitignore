@@ -7,10 +7,28 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies
 node_modules
+backend/node_modules
+
+# Builds
 dist
 dist-ssr
-*.local
+backend/dist
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.*.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+!backend/.env.*.example
+
+# Prisma local files
+backend/prisma/*.db
+backend/prisma/*.db-journal
 
 # Editor directories and files
 .vscode/*
