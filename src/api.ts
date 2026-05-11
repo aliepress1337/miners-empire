@@ -1,6 +1,11 @@
 import type { TelegramUser } from './telegram'
 
-export type UpgradeLevelsDto = Record<string, number>
+export type UpgradeLevelsDto = {
+  smallBone: number
+  bigBone: number
+  autoFarm1: number
+  autoFarm2: number
+}
 
 export type PlayerDto = {
   id: string
@@ -23,7 +28,6 @@ export type ReferralDto = {
   username: string | null
   firstName: string | null
   balance: number
-  hourlyProfit: number
   createdAt: string
 }
 
@@ -84,19 +88,6 @@ export type FinalRewardsDto = {
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ??
   'http://localhost:4000'
-
-function buildPlayerSyncBody(payload: PlayerSyncPayload) {
-  return {
-    telegramId: payload.telegramUser?.id,
-    username: payload.telegramUser?.username,
-    firstName: payload.telegramUser?.firstName,
-    startParam: payload.startParam,
-    balance: payload.balance,
-    clickProfit: payload.clickProfit,
-    hourlyProfit: payload.hourlyProfit,
-    upgradeLevels: payload.upgradeLevels,
-  }
-}
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
   const data = await response.json().catch(() => null)
@@ -162,8 +153,6 @@ export async function getPlayerReferrals(telegramUser: TelegramUser | null) {
     referrals: ReferralDto[]
     count: number
     joinBonus: number
-    hourlyBonusPercent: number
-    hourlyBonus: number
   }>(response)
 }
 
@@ -181,13 +170,26 @@ export async function getLeaderboard(telegramUser: TelegramUser | null) {
   return parseJsonResponse<LeaderboardDto>(response)
 }
 
+function createPlayerSyncRequestBody(payload: PlayerSyncPayload) {
+  return {
+    telegramId: payload.telegramUser?.id,
+    username: payload.telegramUser?.username,
+    firstName: payload.telegramUser?.firstName,
+    startParam: payload.startParam,
+    balance: payload.balance,
+    clickProfit: payload.clickProfit,
+    hourlyProfit: payload.hourlyProfit,
+    upgradeLevels: payload.upgradeLevels,
+  }
+}
+
 export async function syncPlayerProgress(payload: PlayerSyncPayload) {
   const response = await fetch(`${API_BASE_URL}/api/player/sync`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(buildPlayerSyncBody(payload)),
+    body: JSON.stringify(createPlayerSyncRequestBody(payload)),
   })
 
   return parseJsonResponse<{
@@ -195,6 +197,32 @@ export async function syncPlayerProgress(payload: PlayerSyncPayload) {
     game: GameStateDto
     player: PlayerDto
   }>(response)
+}
+
+export function syncPlayerProgressBeacon(payload: PlayerSyncPayload) {
+  const requestBody = JSON.stringify(createPlayerSyncRequestBody(payload))
+  const url = `${API_BASE_URL}/api/player/sync`
+
+  if (typeof navigator !== 'undefined' && 'sendBeacon' in navigator) {
+    const blob = new Blob([requestBody], {
+      type: 'application/json',
+    })
+
+    return navigator.sendBeacon(url, blob)
+  }
+
+  void fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: requestBody,
+    keepalive: true,
+  }).catch((error) => {
+    console.error('Keepalive sync failed:', error)
+  })
+
+  return true
 }
 
 export async function getFinalRewards() {
@@ -219,64 +247,4 @@ export async function getRewardsPreview() {
     rewards: PlayerRewardDto[]
     calculatedAt: string
   }>(response)
-}
-
-export async function finishGameForTest() {
-  const response = await fetch(`${API_BASE_URL}/api/game/finish-for-test`, {
-    method: 'POST',
-  })
-
-  return parseJsonResponse<{
-    status: 'ok'
-    game: GameStateDto
-  }>(response)
-}
-
-export async function resetGameForTest() {
-  const response = await fetch(`${API_BASE_URL}/api/game/reset-for-test`, {
-    method: 'POST',
-  })
-
-  return parseJsonResponse<{
-    status: 'ok'
-    game: GameStateDto
-  }>(response)
-}
-
-export async function finalizeRewards() {
-  const response = await fetch(`${API_BASE_URL}/api/rewards/finalize`, {
-    method: 'POST',
-  })
-
-  return parseJsonResponse<{
-    status: 'ok'
-    alreadyFinalized: boolean
-    game: GameStateDto
-    finalRewards: FinalRewardsDto
-  }>(response)
-}
-
-
-export function syncPlayerProgressBeforeExit(payload: PlayerSyncPayload) {
-  const body = JSON.stringify(buildPlayerSyncBody(payload))
-  const url = `${API_BASE_URL}/api/player/sync`
-
-  if (navigator.sendBeacon) {
-    const blob = new Blob([body], {
-      type: 'application/json',
-    })
-
-    if (navigator.sendBeacon(url, blob)) {
-      return
-    }
-  }
-
-  void fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body,
-    keepalive: true,
-  }).catch(() => undefined)
 }

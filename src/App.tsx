@@ -2,20 +2,19 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 import {
-  finalizeRewards,
-  finishGameForTest,
   getCurrentPlayer,
   getFinalRewards,
   getGameState,
   getLeaderboard,
   getPlayerReferrals,
-  resetGameForTest,
   syncPlayerProgress,
-  syncPlayerProgressBeforeExit,
+  syncPlayerProgressBeacon,
   type FinalRewardsDto,
   type GameStateDto,
   type LeaderboardPlayerDto,
+  type PlayerDto,
   type PlayerRewardDto,
+  type PlayerSyncPayload,
   type ReferralDto,
 } from './api'
 
@@ -53,30 +52,17 @@ type LevelConfig = {
 
 type TabName = 'clicker' | 'feed' | 'friends' | 'earn' | 'shop'
 
-type UpgradeId = string
+type UpgradeId = 'smallBone' | 'bigBone' | 'autoFarm1' | 'autoFarm2'
 
 type UpgradeType = 'click' | 'hourly'
-
-type FeedCategory = 'food' | 'auto'
 
 type FeedUpgrade = {
   id: UpgradeId
   title: string
   type: UpgradeType
-  category: FeedCategory
   basePrice: number
   profitIncrease: number
   description: string
-  emoji: string
-  tag: string
-}
-
-type ShopItem = {
-  title: string
-  description: string
-  badge: string
-  priceLabel: string
-  icon: string
 }
 
 type UpgradeLevels = Record<UpgradeId, number>
@@ -98,568 +84,62 @@ const GAME_DURATION_MS = GAME_DURATION_DAYS * 24 * 60 * 60 * 1000
 
 const OFFLINE_HOURLY_MULTIPLIER = 0.5
 const ONLINE_HOURLY_MULTIPLIER = 1
-const PRICE_GROWTH = 1.75
-const PROFIT_GROWTH = 1.25
-const AUTO_SYNC_DELAY_MS = 2500
-const FORCE_SYNC_INTERVAL_MS = 15000
+const PRICE_GROWTH = 1.5
+const BACKEND_SYNC_INTERVAL_MS = 3000
 
 const BOT_USERNAME = 'MinersEmpire_bot'
-const REFERRAL_JOIN_BONUS = 5000
-const REFERRAL_HOURLY_BONUS_PERCENT = 0.05
-const REFERRAL_HOURLY_BONUS_PERCENT_LABEL = 5
 
-const FEED_SECTIONS: Array<{
-  category: FeedCategory
-  title: string
-  description: string
-}> = [
-  {
-    category: 'food',
-    title: 'Еда для кликов',
-    description: 'Редкие, но заметные апгрейды силы клика.',
-  },
-  {
-    category: 'auto',
-    title: 'Пассивный фарм',
-    description: 'Стабильный рост монет в час без постоянных кликов.',
-  },
-]
+const DEFAULT_UPGRADE_LEVELS: UpgradeLevels = {
+  smallBone: 0,
+  bigBone: 0,
+  autoFarm1: 0,
+  autoFarm2: 0,
+}
 
 const FEED_UPGRADES: FeedUpgrade[] = [
-  {
-    id: 'crumbs',
-    title: 'Crumbs',
-    type: 'click',
-    category: 'food',
-    basePrice: 10,
-    profitIncrease: 1,
-    description: 'Самый дешёвый стартовый корм.',
-    emoji: '🍪',
-    tag: 'Start',
-  },
   {
     id: 'smallBone',
     title: 'Small Bone',
     type: 'click',
-    category: 'food',
-    basePrice: 45,
-    profitIncrease: 2,
-    description: 'Первый нормальный буст для кликов.',
-    emoji: '🦴',
-    tag: 'Basic',
+    basePrice: 50,
+    profitIncrease: 1,
+    description: '+1 к прибыли за клик',
   },
   {
-    id: 'puppyCookie',
-    title: 'Puppy Cookie',
+    id: 'bigBone',
+    title: 'Big Bone',
     type: 'click',
-    category: 'food',
-    basePrice: 140,
-    profitIncrease: 4,
-    description: 'Дешёвый буст, но уже ощутимее старта.',
-    emoji: '🍪',
-    tag: 'Snack',
-  },
-  {
-    id: 'tastyBone',
-    title: 'Tasty Bone',
-    type: 'click',
-    category: 'food',
-    basePrice: 420,
-    profitIncrease: 8,
-    description: 'Плавный переход к средним апгрейдам.',
-    emoji: '🍖',
-    tag: 'Food',
-  },
-  {
-    id: 'meatSnack',
-    title: 'Meat Snack',
-    type: 'click',
-    category: 'food',
-    basePrice: 1200,
-    profitIncrease: 15,
-    description: 'Больше смысла копить, меньше мелких +3/+5.',
-    emoji: '🍗',
-    tag: 'Meat',
-  },
-  {
-    id: 'dogBowl',
-    title: 'Dog Bowl',
-    type: 'click',
-    category: 'food',
-    basePrice: 3200,
-    profitIncrease: 28,
-    description: 'Первый уверенный апгрейд для активной игры.',
-    emoji: '🥣',
-    tag: 'Meal',
-  },
-  {
-    id: 'snackBox',
-    title: 'Snack Box',
-    type: 'click',
-    category: 'food',
-    basePrice: 8500,
-    profitIncrease: 50,
-    description: 'Хороший буст после накопления.',
-    emoji: '📦',
-    tag: 'Combo',
-  },
-  {
-    id: 'premiumKibble',
-    title: 'Premium Kibble',
-    type: 'click',
-    category: 'food',
-    basePrice: 20000,
-    profitIncrease: 90,
-    description: 'Середина прогресса для сильного клика.',
-    emoji: '🍲',
-    tag: 'Plus',
-  },
-  {
-    id: 'championMeal',
-    title: 'Champion Meal',
-    type: 'click',
-    category: 'food',
-    basePrice: 45000,
-    profitIncrease: 150,
-    description: 'Первая покупка даёт +150, дальше эффект растёт.',
-    emoji: '🏅',
-    tag: 'Pro',
-  },
-  {
-    id: 'proteinPlate',
-    title: 'Protein Plate',
-    type: 'click',
-    category: 'food',
-    basePrice: 100000,
-    profitIncrease: 250,
-    description: 'Сильный апгрейд для активного фарма.',
-    emoji: '🥘',
-    tag: 'Strong',
-  },
-  {
-    id: 'powerSteak',
-    title: 'Power Steak',
-    type: 'click',
-    category: 'food',
-    basePrice: 220000,
-    profitIncrease: 420,
-    description: 'Большой скачок, но цена уже серьёзная.',
-    emoji: '🥩',
-    tag: 'Power',
-  },
-  {
-    id: 'royalBone',
-    title: 'Royal Bone',
-    type: 'click',
-    category: 'food',
-    basePrice: 500000,
-    profitIncrease: 700,
-    description: 'Премиальная еда до late-game.',
-    emoji: '👑',
-    tag: 'Royal',
-  },
-  {
-    id: 'goldenFeast',
-    title: 'Golden Feast',
-    type: 'click',
-    category: 'food',
-    basePrice: 1100000,
-    profitIncrease: 1100,
-    description: 'Крупный апгрейд для миллионных балансов.',
-    emoji: '🍛',
-    tag: 'Gold',
-  },
-  {
-    id: 'legendaryFeast',
-    title: 'Legendary Feast',
-    type: 'click',
-    category: 'food',
-    basePrice: 2500000,
-    profitIncrease: 1800,
-    description: 'Сильный кликовый предмет для поздней игры.',
-    emoji: '🔥',
-    tag: 'Legend',
-  },
-  {
-    id: 'mythicBowl',
-    title: 'Mythic Bowl',
-    type: 'click',
-    category: 'food',
-    basePrice: 5500000,
-    profitIncrease: 3000,
-    description: 'Очень дорогой, но заметный рост клика.',
-    emoji: '💫',
-    tag: 'Mythic',
-  },
-  {
-    id: 'feastHall',
-    title: 'Tsutsik Feast Hall',
-    type: 'click',
-    category: 'food',
-    basePrice: 12000000,
-    profitIncrease: 5000,
-    description: 'Финальный кликовый апгрейд в обычной еде.',
-    emoji: '🏛️',
-    tag: 'Hall',
-  },
-  {
-    id: 'waterBowl',
-    title: 'Water Bowl',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 160,
-    profitIncrease: 18,
-    description: 'Дешёвый старт пассивной прибыли.',
-    emoji: '💧',
-    tag: 'Passive',
-  },
-  {
-    id: 'comfyMat',
-    title: 'Comfy Mat',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 360,
-    profitIncrease: 45,
-    description: 'Небольшой, но полезный автофарм.',
-    emoji: '🧺',
-    tag: 'Rest',
+    basePrice: 250,
+    profitIncrease: 5,
+    description: '+5 к прибыли за клик',
   },
   {
     id: 'autoFarm1',
     title: 'Auto Farm I',
     type: 'hourly',
-    category: 'auto',
-    basePrice: 850,
-    profitIncrease: 110,
-    description: 'Первый серьёзный доход в час.',
-    emoji: '⛏️',
-    tag: 'Farm',
-  },
-  {
-    id: 'puppyBed',
-    title: 'Puppy Bed',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 1900,
-    profitIncrease: 240,
-    description: 'Пассивный рост для начала игры.',
-    emoji: '🛏️',
-    tag: 'Sleep',
-  },
-  {
-    id: 'toyBasket',
-    title: 'Toy Basket',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 4200,
-    profitIncrease: 520,
-    description: 'Хороший автофарм после первых кликов.',
-    emoji: '🧸',
-    tag: 'Fun',
+    basePrice: 100,
+    profitIncrease: 120,
+    description: '+120 монет прибыли в час',
   },
   {
     id: 'autoFarm2',
     title: 'Auto Farm II',
     type: 'hourly',
-    category: 'auto',
-    basePrice: 9000,
-    profitIncrease: 1100,
-    description: 'Переход к тысячам монет в час.',
-    emoji: '⚙️',
-    tag: 'Auto',
-  },
-  {
-    id: 'dogHouse',
-    title: 'Dog House',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 20000,
-    profitIncrease: 2400,
-    description: 'Домик приносит стабильный доход.',
-    emoji: '🏠',
-    tag: 'House',
-  },
-  {
-    id: 'trainerVisit',
-    title: 'Trainer Visit',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 45000,
-    profitIncrease: 5000,
-    description: 'Тренер ускоряет прогресс без кликов.',
-    emoji: '🧑‍🏫',
-    tag: 'Coach',
-  },
-  {
-    id: 'goldenBowl',
-    title: 'Golden Bowl',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 100000,
-    profitIncrease: 10500,
-    description: 'Пассивный предмет для средних балансов.',
-    emoji: '🏆',
-    tag: 'Gold',
-  },
-  {
-    id: 'boneGarden',
-    title: 'Bone Garden',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 230000,
-    profitIncrease: 22000,
-    description: 'Сад косточек растит доход каждый час.',
-    emoji: '🌱',
-    tag: 'Grow',
-  },
-  {
-    id: 'sleepyGuard',
-    title: 'Sleepy Guard',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 520000,
-    profitIncrease: 47000,
-    description: 'Охранник фармит, даже когда отдыхает.',
-    emoji: '🐶',
-    tag: 'Guard',
-  },
-  {
-    id: 'autoKitchen',
-    title: 'Auto Kitchen',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 1100000,
-    profitIncrease: 100000,
-    description: 'Кухня автоматически создаёт прибыль.',
-    emoji: '🍳',
-    tag: 'Kitchen',
-  },
-  {
-    id: 'kennelNetwork',
-    title: 'Kennel Network',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 2500000,
-    profitIncrease: 220000,
-    description: 'Сеть домиков для большого автофарма.',
-    emoji: '🏘️',
-    tag: 'Network',
-  },
-  {
-    id: 'foodTruck',
-    title: 'Food Truck',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 5500000,
-    profitIncrease: 480000,
-    description: 'Мобильная кухня приносит монеты в час.',
-    emoji: '🚚',
-    tag: 'Truck',
-  },
-  {
-    id: 'boneFactory',
-    title: 'Bone Factory',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 12000000,
-    profitIncrease: 1000000,
-    description: 'Фабрика для миллионного пассивного дохода.',
-    emoji: '🏭',
-    tag: 'Factory',
-  },
-  {
-    id: 'cityShelter',
-    title: 'City Shelter',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 26000000,
-    profitIncrease: 2200000,
-    description: 'Большой shelter для сильного late-game.',
-    emoji: '🏙️',
-    tag: 'City',
-  },
-  {
-    id: 'trainingWhistle',
-    title: 'Training Whistle',
-    type: 'click',
-    category: 'food',
-    basePrice: 75000,
-    profitIncrease: 180,
-    description: 'Премиальный буст активной игры.',
-    emoji: '📣',
-    tag: 'Boost',
-  },
-  {
-    id: 'silverLeash',
-    title: 'Silver Leash',
-    type: 'click',
-    category: 'food',
-    basePrice: 180000,
-    profitIncrease: 380,
-    description: 'Редкий предмет для кликового роста.',
-    emoji: '🔗',
-    tag: 'Rare',
-  },
-  {
-    id: 'goldenCollar',
-    title: 'Golden Collar',
-    type: 'click',
-    category: 'food',
-    basePrice: 420000,
-    profitIncrease: 800,
-    description: 'Эпический клик-буст для сильной игры.',
-    emoji: '📿',
-    tag: 'Epic',
-  },
-  {
-    id: 'vipKennel',
-    title: 'VIP Kennel',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 850000,
-    profitIncrease: 160000,
-    description: 'VIP пассивный доход для богатых игроков.',
-    emoji: '🏡',
-    tag: 'VIP',
-  },
-  {
-    id: 'guardDogCamp',
-    title: 'Guard Dog Camp',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 1800000,
-    profitIncrease: 360000,
-    description: 'Охрана приносит большой доход в час.',
-    emoji: '🛡️',
-    tag: 'Camp',
-  },
-  {
-    id: 'tsutsikFactory',
-    title: 'Tsutsik Factory',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 4000000,
-    profitIncrease: 800000,
-    description: 'Фабрика для быстрого роста баланса.',
-    emoji: '🏭',
-    tag: 'Mega',
-  },
-  {
-    id: 'boneMine',
-    title: 'Bone Mine',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 9000000,
-    profitIncrease: 1700000,
-    description: 'Шахта косточек для late-game фарма.',
-    emoji: '💎',
-    tag: 'Mine',
-  },
-  {
-    id: 'royalKitchen',
-    title: 'Royal Kitchen',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 18000000,
-    profitIncrease: 3200000,
-    description: 'Королевская кухня с огромным доходом.',
-    emoji: '🍽️',
-    tag: 'Royal',
-  },
-  {
-    id: 'legendaryTrainer',
-    title: 'Legendary Trainer',
-    type: 'click',
-    category: 'food',
-    basePrice: 22000000,
-    profitIncrease: 8000,
-    description: 'Очень сильный click апгрейд.',
-    emoji: '🏋️',
-    tag: 'Legend',
-  },
-  {
-    id: 'tsutsikBank',
-    title: 'Tsutsik Bank',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 40000000,
-    profitIncrease: 7000000,
-    description: 'Банк для огромного пассивного дохода.',
-    emoji: '🏦',
-    tag: 'Bank',
-  },
-  {
-    id: 'worldDogCup',
-    title: 'World Dog Cup',
-    type: 'click',
-    category: 'food',
-    basePrice: 55000000,
-    profitIncrease: 20000,
-    description: 'Финальный кликовый трофей.',
-    emoji: '🏆',
-    tag: 'World',
-  },
-  {
-    id: 'championEmpire',
-    title: 'Champion Empire',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 90000000,
-    profitIncrease: 15000000,
-    description: 'Самый дорогой пассивный апгрейд.',
-    emoji: '🏰',
-    tag: 'Endgame',
-  },
-]
-
-const DEFAULT_UPGRADE_LEVELS: UpgradeLevels = FEED_UPGRADES.reduce<UpgradeLevels>(
-  (levels, upgrade) => {
-    levels[upgrade.id] = 0
-    return levels
-  },
-  {},
-)
-
-const SHOP_ITEMS: ShopItem[] = [
-  {
-    title: 'Starter Bones',
-    description: 'Набор для быстрого старта: монеты, кости и небольшой буст прогресса.',
-    badge: 'Soon',
-    priceLabel: 'Basic pack',
-    icon: '🦴',
-  },
-  {
-    title: 'Click Booster',
-    description: 'Временное усиление кликов для активной игры и быстрого роста баланса.',
-    badge: 'Beta 2',
-    priceLabel: '+ click power',
-    icon: '⚡',
-  },
-  {
-    title: 'Auto Farm Pack',
-    description: 'Пакет для пассивной прибыли: будет полезен, когда игрок не в игре.',
-    badge: 'Planned',
-    priceLabel: '+ hourly farm',
-    icon: '⏱️',
-  },
-  {
-    title: 'Rare Dog Skin',
-    description: 'Косметический предмет без преимущества в балансе, только стиль профиля.',
-    badge: 'Cosmetic',
-    priceLabel: 'visual item',
-    icon: '👑',
+    basePrice: 500,
+    profitIncrease: 600,
+    description: '+600 монет прибыли в час',
   },
 ]
 
 const LEVELS: LevelConfig[] = [
   { level: 1, name: 'Bronze', minCoins: 0 },
-  { level: 2, name: 'Silver', minCoins: 1000 },
-  { level: 3, name: 'Gold', minCoins: 50000 },
-  { level: 4, name: 'Platinum', minCoins: 300000 },
-  { level: 5, name: 'Diamond', minCoins: 1000000 },
-  { level: 6, name: 'Master', minCoins: 5000000 },
-  { level: 7, name: 'Legend', minCoins: 25000000 },
-  { level: 8, name: 'Tsutsik King', minCoins: 100000000 },
+  { level: 2, name: 'Silver', minCoins: 100 },
+  { level: 3, name: 'Gold', minCoins: 300 },
+  { level: 4, name: 'Platinum', minCoins: 700 },
+  { level: 5, name: 'Diamond', minCoins: 1500 },
+  { level: 6, name: 'Master', minCoins: 3000 },
+  { level: 7, name: 'Legend', minCoins: 6000 },
+  { level: 8, name: 'Tsutsik King', minCoins: 10000 },
 ]
 
 const DOG_IMAGES: Record<number, string> = {
@@ -685,81 +165,23 @@ const TABS: Array<{
   { id: 'shop', label: 'Shop', icon: shopIcon },
 ]
 
-function getSafeNumber(value: unknown, fallback = 0) {
-  const parsedValue = Number(value)
-
-  return Number.isFinite(parsedValue) ? parsedValue : fallback
-}
-
-function getSafePositiveNumber(value: unknown, fallback = 0) {
-  return Math.max(0, getSafeNumber(value, fallback))
-}
-
-function formatNumber(value: number) {
-  const safeValue = getSafeNumber(value, 0)
-  const absoluteValue = Math.abs(safeValue)
-
-  if (absoluteValue < 1000) {
-    const roundedValue = Math.round(safeValue * 10) / 10
-    return Number.isInteger(roundedValue)
-      ? String(roundedValue)
-      : roundedValue.toFixed(1)
-  }
-
-  const units = [
-    { value: 1000000000000, suffix: 'T' },
-    { value: 1000000000, suffix: 'B' },
-    { value: 1000000, suffix: 'M' },
-    { value: 1000, suffix: 'K' },
-  ]
-
-  const unit = units.find((currentUnit) => absoluteValue >= currentUnit.value)
-
-  if (!unit) {
-    return String(Math.floor(safeValue))
-  }
-
-  const shortValue = safeValue / unit.value
-  const roundedShortValue = Math.floor(shortValue * 10) / 10
-
-  return `${Number.isInteger(roundedShortValue) ? roundedShortValue.toFixed(0) : roundedShortValue.toFixed(1)}${unit.suffix}`
-}
-
 function calculateUpgradePrice(basePrice: number, upgradeLevel: number) {
   return Math.floor(basePrice * PRICE_GROWTH ** upgradeLevel)
 }
 
-function calculateUpgradeProfit(baseProfit: number, upgradeLevel: number) {
-  return Math.round(baseProfit * PROFIT_GROWTH ** upgradeLevel * 10) / 10
-}
-
-function getUpgradeProfitLabel(upgrade: FeedUpgrade, upgradeLevel: number) {
-  const profit = calculateUpgradeProfit(upgrade.profitIncrease, upgradeLevel)
-
-  return upgrade.type === 'click'
-    ? `+${formatNumber(profit)} за клик`
-    : `+${formatNumber(profit)}/час`
-}
-
 function normalizeUpgradeLevels(value: unknown): UpgradeLevels {
-  const normalizedLevels: UpgradeLevels = { ...DEFAULT_UPGRADE_LEVELS }
-
   if (!value || typeof value !== 'object') {
-    return normalizedLevels
+    return DEFAULT_UPGRADE_LEVELS
   }
 
-  const partialLevels = value as Partial<Record<UpgradeId, unknown>>
+  const partialLevels = value as Partial<UpgradeLevels>
 
-  Object.keys(normalizedLevels).forEach((upgradeId) => {
-    const typedUpgradeId = upgradeId as UpgradeId
-    const parsedLevel = Number(partialLevels[typedUpgradeId])
-
-    normalizedLevels[typedUpgradeId] = Number.isFinite(parsedLevel)
-      ? Math.max(Math.floor(parsedLevel), 0)
-      : 0
-  })
-
-  return normalizedLevels
+  return {
+    smallBone: Number(partialLevels.smallBone) || 0,
+    bigBone: Number(partialLevels.bigBone) || 0,
+    autoFarm1: Number(partialLevels.autoFarm1) || 0,
+    autoFarm2: Number(partialLevels.autoFarm2) || 0,
+  }
 }
 
 function createDefaultSave(): GameSave {
@@ -798,20 +220,20 @@ function loadSavedGame(): GameSave {
     const gameEndsAt =
       Number(parsedSave.gameEndsAt) || gameStartedAt + GAME_DURATION_MS
 
-    const balance = getSafePositiveNumber(parsedSave.balance, 0)
-    const clickProfit = getSafePositiveNumber(parsedSave.clickProfit, 1) || 1
-    const hourlyProfit = getSafePositiveNumber(parsedSave.hourlyProfit, 0)
-    const savedAt = getSafeNumber(parsedSave.savedAt, now) || now
+    const balance = Number(parsedSave.balance) || 0
+    const clickProfit = Number(parsedSave.clickProfit) || 1
+    const hourlyProfit = Number(parsedSave.hourlyProfit) || 0
+    const savedAt = Number(parsedSave.savedAt) || now
 
     const upgradeLevels =
       parsedSave.upgradeLevels !== undefined
         ? normalizeUpgradeLevels(parsedSave.upgradeLevels)
-        : normalizeUpgradeLevels({
+        : {
             smallBone: Number(parsedSave.smallBoneLevel) || 0,
             bigBone: Number(parsedSave.bigBoneLevel) || 0,
             autoFarm1: Number(parsedSave.autoFarm1Level) || 0,
             autoFarm2: Number(parsedSave.autoFarm2Level) || 0,
-          })
+          }
 
     const offlineEndTime = Math.min(now, gameEndsAt)
     const offlineMilliseconds = Math.max(offlineEndTime - savedAt, 0)
@@ -830,6 +252,60 @@ function loadSavedGame(): GameSave {
   } catch {
     return defaultSave
   }
+}
+
+function hasLocalGameSave() {
+  return localStorage.getItem(SAVE_KEY) !== null
+}
+
+function saveGameToLocalStorage(save: GameSave) {
+  localStorage.setItem(SAVE_KEY, JSON.stringify(save))
+}
+
+function getUpgradeLevelsScore(upgradeLevels: UpgradeLevels) {
+  return Object.values(upgradeLevels).reduce((sum, level) => sum + level, 0)
+}
+
+function shouldPreferLocalSave(
+  localSave: GameSave,
+  serverPlayer: PlayerDto | null,
+  hasLocalSave: boolean,
+) {
+  if (!hasLocalSave) {
+    return false
+  }
+
+  if (!serverPlayer) {
+    return true
+  }
+
+  const serverUpdatedAt = Date.parse(serverPlayer.updatedAt)
+  const localSavedAt = Number(localSave.savedAt)
+
+  if (!Number.isFinite(serverUpdatedAt) || !Number.isFinite(localSavedAt)) {
+    return true
+  }
+
+  const localLooksNewer = localSavedAt >= serverUpdatedAt - 1000
+  const localHasMoreProgress =
+    Math.floor(localSave.balance) > serverPlayer.balance ||
+    localSave.clickProfit > serverPlayer.clickProfit ||
+    localSave.hourlyProfit > serverPlayer.hourlyProfit ||
+    getUpgradeLevelsScore(localSave.upgradeLevels) >
+      getUpgradeLevelsScore(serverPlayer.upgradeLevels)
+
+  return localLooksNewer && localHasMoreProgress
+}
+
+function createSyncKey(payload: PlayerSyncPayload) {
+  return JSON.stringify({
+    telegramId: payload.telegramUser?.id ?? null,
+    startParam: payload.startParam ?? null,
+    balance: Math.floor(payload.balance),
+    clickProfit: payload.clickProfit,
+    hourlyProfit: payload.hourlyProfit,
+    upgradeLevels: payload.upgradeLevels,
+  })
 }
 
 function generateLocalPromoCode(balance: number) {
@@ -901,6 +377,7 @@ function findMyReward(
 }
 
 function App() {
+  const hasLocalSave = useMemo(() => hasLocalGameSave(), [])
   const savedGame = useMemo(() => loadSavedGame(), [])
 
   const [balance, setBalance] = useState(savedGame.balance)
@@ -921,54 +398,50 @@ function App() {
 
   const [serverGame, setServerGame] = useState<GameStateDto | null>(null)
   const [serverStatusText, setServerStatusText] = useState('Checking backend...')
-  const [adminStatusText, setAdminStatusText] = useState('Ready for local tests')
-  const [adminActionBusy, setAdminActionBusy] = useState(false)
   const [finalRewards, setFinalRewards] = useState<FinalRewardsDto | null>(null)
   const [backendPlayerLoaded, setBackendPlayerLoaded] = useState(false)
 
   const [referrals, setReferrals] = useState<ReferralDto[]>([])
   const [referralsCount, setReferralsCount] = useState(0)
-  const [referralJoinBonus, setReferralJoinBonus] = useState(REFERRAL_JOIN_BONUS)
-  const [serverReferralHourlyBonus, setServerReferralHourlyBonus] = useState(0)
-  const [referralHourlyBonusPercent, setReferralHourlyBonusPercent] = useState(REFERRAL_HOURLY_BONUS_PERCENT_LABEL)
+  const [referralJoinBonus, setReferralJoinBonus] = useState(500)
 
   const [leaderboard, setLeaderboard] = useState<LeaderboardPlayerDto[]>([])
   const [currentLeaderboardPlayer, setCurrentLeaderboardPlayer] =
     useState<LeaderboardPlayerDto | null>(null)
   const [playersCount, setPlayersCount] = useState(0)
 
-  const latestSavePayloadRef = useRef<PlayerSyncPayload | null>(null)
+  const balanceRef = useRef(balance)
+  const clickProfitRef = useRef(clickProfit)
+  const hourlyProfitRef = useRef(hourlyProfit)
+  const upgradeLevelsRef = useRef(upgradeLevels)
+  const telegramUserRef = useRef<TelegramUser | null>(telegramUser)
+  const telegramStartParamRef = useRef<string | null>(telegramStartParam)
+  const backendPlayerLoadedRef = useRef(backendPlayerLoaded)
+  const isGameFinishedRef = useRef(false)
+  const serverGameStatusRef = useRef<GameStateDto['status'] | null>(null)
   const syncInFlightRef = useRef(false)
-  const syncAgainAfterCurrentRef = useRef(false)
+  const queuedSyncPayloadRef = useRef<PlayerSyncPayload | null>(null)
+  const lastSyncedKeyRef = useRef<string | null>(null)
 
-  const displayedBalance = Math.floor(getSafePositiveNumber(balance, 0))
-  const safeClickProfit = getSafePositiveNumber(clickProfit, 1) || 1
-  const safeHourlyProfit = getSafePositiveNumber(hourlyProfit, 0)
-  const calculatedReferralHourlyBonus = useMemo(() => {
-    const bonus = referrals.reduce((sum, referral) => {
-      return (
-        sum +
-        getSafePositiveNumber(referral.hourlyProfit, 0) *
-          REFERRAL_HOURLY_BONUS_PERCENT
-      )
-    }, 0)
-
-    return Math.round(bonus * 10) / 10
-  }, [referrals])
-  const referralHourlyBonus = Math.max(
-    getSafePositiveNumber(serverReferralHourlyBonus, 0),
-    calculatedReferralHourlyBonus,
-  )
-  const effectiveHourlyProfit = safeHourlyProfit + referralHourlyBonus
+  const displayedBalance = Math.floor(balance)
   const maxLevel = LEVELS.length
 
   const localGameFinished = currentTime >= gameEndsAt
   const serverGameFinished = serverGame?.status === 'finished'
   const isGameFinished = serverGame ? serverGameFinished : localGameFinished
 
+  balanceRef.current = balance
+  clickProfitRef.current = clickProfit
+  hourlyProfitRef.current = hourlyProfit
+  upgradeLevelsRef.current = upgradeLevels
+  telegramUserRef.current = telegramUser
+  telegramStartParamRef.current = telegramStartParam
+  backendPlayerLoadedRef.current = backendPlayerLoaded
+  isGameFinishedRef.current = isGameFinished
+  serverGameStatusRef.current = serverGame?.status ?? null
+
   const referralLink = getReferralLink(telegramUser)
   const myReward = findMyReward(finalRewards, telegramUser)
-  const showDevTestPanel = !telegramMode
 
   const ratingText = currentLeaderboardPlayer
     ? `#${currentLeaderboardPlayer.rank}`
@@ -978,38 +451,13 @@ function App() {
     try {
       const referralsResponse = await getPlayerReferrals(currentTelegramUser)
 
-      const safeReferrals = referralsResponse.referrals.map((referral) => ({
-        ...referral,
-        balance: getSafePositiveNumber(referral.balance, 0),
-        hourlyProfit: getSafePositiveNumber(referral.hourlyProfit, 0),
-      }))
-
-      const backendJoinBonus = getSafePositiveNumber(referralsResponse.joinBonus, 0)
-      const backendHourlyBonusPercent = getSafePositiveNumber(
-        referralsResponse.hourlyBonusPercent,
-        0,
-      )
-
-      setReferrals(safeReferrals)
-      setReferralsCount(getSafePositiveNumber(referralsResponse.count, safeReferrals.length))
-      setReferralJoinBonus(
-        backendJoinBonus >= REFERRAL_JOIN_BONUS
-          ? backendJoinBonus
-          : REFERRAL_JOIN_BONUS,
-      )
-      setServerReferralHourlyBonus(getSafePositiveNumber(referralsResponse.hourlyBonus, 0))
-      setReferralHourlyBonusPercent(
-        backendHourlyBonusPercent > 0
-          ? backendHourlyBonusPercent
-          : REFERRAL_HOURLY_BONUS_PERCENT_LABEL,
-      )
+      setReferrals(referralsResponse.referrals)
+      setReferralsCount(referralsResponse.count)
+      setReferralJoinBonus(referralsResponse.joinBonus)
     } catch (error) {
       console.error('Failed to load referrals:', error)
       setReferrals([])
       setReferralsCount(0)
-      setReferralJoinBonus(REFERRAL_JOIN_BONUS)
-      setServerReferralHourlyBonus(0)
-      setReferralHourlyBonusPercent(REFERRAL_HOURLY_BONUS_PERCENT_LABEL)
     }
   }
 
@@ -1028,6 +476,120 @@ function App() {
     }
   }
 
+  function buildLatestSyncPayload(
+    overrides: Partial<Omit<PlayerSyncPayload, 'telegramUser' | 'startParam'>> & {
+      telegramUser?: TelegramUser | null
+      startParam?: string | null
+    } = {},
+  ): PlayerSyncPayload {
+    return {
+      telegramUser: overrides.telegramUser ?? telegramUserRef.current,
+      startParam: overrides.startParam ?? telegramStartParamRef.current,
+      balance: Math.max(
+        0,
+        Math.floor(overrides.balance ?? balanceRef.current),
+      ),
+      clickProfit: Math.max(
+        1,
+        Math.floor(overrides.clickProfit ?? clickProfitRef.current),
+      ),
+      hourlyProfit: Math.max(
+        0,
+        Math.floor(overrides.hourlyProfit ?? hourlyProfitRef.current),
+      ),
+      upgradeLevels: overrides.upgradeLevels ?? upgradeLevelsRef.current,
+    }
+  }
+
+  function applyLocalProgress(nextSave: GameSave) {
+    balanceRef.current = nextSave.balance
+    clickProfitRef.current = nextSave.clickProfit
+    hourlyProfitRef.current = nextSave.hourlyProfit
+    upgradeLevelsRef.current = nextSave.upgradeLevels
+
+    setBalance(nextSave.balance)
+    setClickProfit(nextSave.clickProfit)
+    setHourlyProfit(nextSave.hourlyProfit)
+    setUpgradeLevels(nextSave.upgradeLevels)
+  }
+
+  function applyServerProgress(player: PlayerDto, payload: PlayerSyncPayload) {
+    balanceRef.current = player.balance
+    clickProfitRef.current = player.clickProfit
+    hourlyProfitRef.current = player.hourlyProfit
+    upgradeLevelsRef.current = player.upgradeLevels
+    lastSyncedKeyRef.current = createSyncKey(payload)
+
+    setBalance(player.balance)
+    setClickProfit(player.clickProfit)
+    setHourlyProfit(player.hourlyProfit)
+    setUpgradeLevels(player.upgradeLevels)
+  }
+
+  async function pushProgressToBackend(
+    payload: PlayerSyncPayload,
+    options: { force?: boolean } = {},
+  ) {
+    if (!backendPlayerLoadedRef.current && !options.force) {
+      return
+    }
+
+    if (isGameFinishedRef.current) {
+      return
+    }
+
+    if (serverGameStatusRef.current !== 'active' && !options.force) {
+      return
+    }
+
+    const syncKey = createSyncKey(payload)
+
+    if (!options.force && syncKey === lastSyncedKeyRef.current) {
+      return
+    }
+
+    if (syncInFlightRef.current) {
+      queuedSyncPayloadRef.current = payload
+      return
+    }
+
+    syncInFlightRef.current = true
+
+    try {
+      const response = await syncPlayerProgress(payload)
+
+      lastSyncedKeyRef.current = syncKey
+
+      if (response.game) {
+        serverGameStatusRef.current = response.game.status
+        setServerGame(response.game)
+        setServerStatusText(`Backend game: ${response.game.status} · saved`)
+      }
+    } catch (error) {
+      console.error('Backend sync failed:', error)
+      setServerStatusText('Backend sync failed')
+    } finally {
+      syncInFlightRef.current = false
+
+      const queuedPayload = queuedSyncPayloadRef.current
+      queuedSyncPayloadRef.current = null
+
+      if (queuedPayload && createSyncKey(queuedPayload) !== lastSyncedKeyRef.current) {
+        void pushProgressToBackend(queuedPayload, { force: true })
+      }
+    }
+  }
+
+  function flushProgressBeforeClose() {
+    if (isGameFinishedRef.current) {
+      return
+    }
+
+    const payload = buildLatestSyncPayload()
+    lastSyncedKeyRef.current = createSyncKey(payload)
+    syncPlayerProgressBeacon(payload)
+  }
+
   useEffect(() => {
     async function initApp() {
       initTelegramMiniApp()
@@ -1035,28 +597,52 @@ function App() {
       const currentTelegramUser = getTelegramUser()
       const currentStartParam = getTelegramStartParam()
 
+      telegramUserRef.current = currentTelegramUser
+      telegramStartParamRef.current = currentStartParam
+
       setTelegramUser(currentTelegramUser)
       setTelegramMode(isOpenedInTelegram())
       setTelegramStartParam(currentStartParam)
 
+      let syncLocalSaveAfterLoad = false
+      let localPayloadAfterLoad: PlayerSyncPayload | null = null
+
       try {
         const currentPlayerResponse = await getCurrentPlayer(currentTelegramUser)
+        const shouldUseLocalProgress = shouldPreferLocalSave(
+          savedGame,
+          currentPlayerResponse.player,
+          hasLocalSave,
+        )
 
+        serverGameStatusRef.current = currentPlayerResponse.game.status
         setServerGame(currentPlayerResponse.game)
         setServerStatusText(`Backend game: ${currentPlayerResponse.game.status}`)
 
-        const loadedPlayer = currentPlayerResponse.player
+        if (currentPlayerResponse.player && !shouldUseLocalProgress) {
+          const serverPayload = buildLatestSyncPayload({
+            telegramUser: currentTelegramUser,
+            startParam: currentStartParam,
+            balance: currentPlayerResponse.player.balance,
+            clickProfit: currentPlayerResponse.player.clickProfit,
+            hourlyProfit: currentPlayerResponse.player.hourlyProfit,
+            upgradeLevels: currentPlayerResponse.player.upgradeLevels,
+          })
 
-        if (loadedPlayer) {
-          setBalance(getSafePositiveNumber(loadedPlayer.balance, 0))
-          setClickProfit(getSafePositiveNumber(loadedPlayer.clickProfit, 1) || 1)
-          setHourlyProfit(getSafePositiveNumber(loadedPlayer.hourlyProfit, 0))
-          setUpgradeLevels((currentLevels) =>
-            normalizeUpgradeLevels({
-              ...currentLevels,
-              ...loadedPlayer.upgradeLevels,
-            }),
-          )
+          applyServerProgress(currentPlayerResponse.player, serverPayload)
+        }
+
+        if (shouldUseLocalProgress) {
+          applyLocalProgress(savedGame)
+          localPayloadAfterLoad = buildLatestSyncPayload({
+            telegramUser: currentTelegramUser,
+            startParam: currentStartParam,
+            balance: savedGame.balance,
+            clickProfit: savedGame.clickProfit,
+            hourlyProfit: savedGame.hourlyProfit,
+            upgradeLevels: savedGame.upgradeLevels,
+          })
+          syncLocalSaveAfterLoad = currentPlayerResponse.game.status === 'active'
         }
 
         await loadReferrals(currentTelegramUser)
@@ -1077,9 +663,15 @@ function App() {
         }
       } catch {
         setServerGame(null)
+        serverGameStatusRef.current = null
         setServerStatusText('Backend unavailable, local beta mode')
       } finally {
+        backendPlayerLoadedRef.current = true
         setBackendPlayerLoaded(true)
+
+        if (syncLocalSaveAfterLoad && localPayloadAfterLoad) {
+          void pushProgressToBackend(localPayloadAfterLoad, { force: true })
+        }
       }
     }
 
@@ -1107,165 +699,71 @@ function App() {
       savedAt: Date.now(),
     }
 
-    localStorage.setItem(SAVE_KEY, JSON.stringify(save))
+    saveGameToLocalStorage(save)
   }, [balance, clickProfit, hourlyProfit, upgradeLevels, gameStartedAt, gameEndsAt])
 
   useEffect(() => {
-    latestSavePayloadRef.current = {
-      telegramUser,
-      startParam: telegramStartParam,
-      balance: displayedBalance,
-      clickProfit: safeClickProfit,
-      hourlyProfit: safeHourlyProfit,
-      upgradeLevels,
-    }
-  }, [
-    telegramUser,
-    telegramStartParam,
-    displayedBalance,
-    safeClickProfit,
-    safeHourlyProfit,
-    upgradeLevels,
-  ])
-
-  useEffect(() => {
-    if (!backendPlayerLoaded || isGameFinished || serverGame?.status !== 'active') {
-      return
-    }
-
-    const syncBeforeExit = () => {
-      const latestPayload = latestSavePayloadRef.current
-
-      if (latestPayload) {
-        syncPlayerProgressBeforeExit(latestPayload)
-      }
-    }
-
-    const syncWhenHidden = () => {
-      if (document.visibilityState === 'hidden') {
-        syncBeforeExit()
-      }
-    }
-
-    window.addEventListener('pagehide', syncBeforeExit)
-    document.addEventListener('visibilitychange', syncWhenHidden)
-
-    return () => {
-      window.removeEventListener('pagehide', syncBeforeExit)
-      document.removeEventListener('visibilitychange', syncWhenHidden)
-    }
-  }, [backendPlayerLoaded, isGameFinished, serverGame?.status])
-
-  useEffect(() => {
-    if (!backendPlayerLoaded || isGameFinished || serverGame?.status !== 'active') {
+    if (hourlyProfit <= 0 || isGameFinished) {
       return
     }
 
     const intervalId = window.setInterval(() => {
-      const latestPayload = latestSavePayloadRef.current
+      const profitPerSecond = (hourlyProfit * ONLINE_HOURLY_MULTIPLIER) / 3600
 
-      if (latestPayload) {
-        syncPlayerProgressBeforeExit(latestPayload)
-      }
-    }, FORCE_SYNC_INTERVAL_MS)
-
-    return () => {
-      window.clearInterval(intervalId)
-    }
-  }, [backendPlayerLoaded, isGameFinished, serverGame?.status])
-
-  useEffect(() => {
-    if (effectiveHourlyProfit <= 0 || isGameFinished) {
-      return
-    }
-
-    const intervalId = window.setInterval(() => {
-      const profitPerSecond =
-        (effectiveHourlyProfit * ONLINE_HOURLY_MULTIPLIER) / 3600
-
-      setBalance((currentBalance) => currentBalance + profitPerSecond)
+      setBalance((currentBalance) => {
+        const nextBalance = currentBalance + profitPerSecond
+        balanceRef.current = nextBalance
+        return nextBalance
+      })
     }, 1000)
 
     return () => {
       window.clearInterval(intervalId)
     }
-  }, [effectiveHourlyProfit, isGameFinished])
+  }, [hourlyProfit, isGameFinished])
 
   useEffect(() => {
     if (!backendPlayerLoaded) {
       return
     }
 
-    if (isGameFinished || serverGame?.status !== 'active') {
+    const intervalId = window.setInterval(() => {
+      void pushProgressToBackend(buildLatestSyncPayload())
+    }, BACKEND_SYNC_INTERVAL_MS)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [backendPlayerLoaded])
+
+  useEffect(() => {
+    if (!backendPlayerLoaded) {
       return
     }
 
-    const timeoutId = window.setTimeout(async () => {
-      const latestPayload = latestSavePayloadRef.current
-
-      if (!latestPayload) {
+    function handleVisibilityChange() {
+      if (document.visibilityState === 'hidden') {
+        flushProgressBeforeClose()
         return
       }
 
-      if (syncInFlightRef.current) {
-        syncAgainAfterCurrentRef.current = true
-        return
-      }
+      void pushProgressToBackend(buildLatestSyncPayload())
+    }
 
-      syncInFlightRef.current = true
+    function handlePageHide() {
+      flushProgressBeforeClose()
+    }
 
-      try {
-        const response = await syncPlayerProgress(latestPayload)
-
-        if (response.game) {
-          setServerGame(response.game)
-          setServerStatusText(`Backend game: ${response.game.status}`)
-        }
-
-        await loadReferrals(telegramUser)
-        await loadLeaderboard(telegramUser)
-      } catch (error) {
-        console.error('Auto sync failed:', error)
-        setServerStatusText('Backend sync failed')
-      } finally {
-        syncInFlightRef.current = false
-
-        if (syncAgainAfterCurrentRef.current) {
-          syncAgainAfterCurrentRef.current = false
-
-          const newestPayload = latestSavePayloadRef.current
-
-          if (newestPayload) {
-            try {
-              const response = await syncPlayerProgress(newestPayload)
-
-              if (response.game) {
-                setServerGame(response.game)
-                setServerStatusText(`Backend game: ${response.game.status}`)
-              }
-            } catch (error) {
-              console.error('Follow-up sync failed:', error)
-              setServerStatusText('Backend sync failed')
-            }
-          }
-        }
-      }
-    }, AUTO_SYNC_DELAY_MS)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('pagehide', handlePageHide)
+    window.addEventListener('beforeunload', handlePageHide)
 
     return () => {
-      window.clearTimeout(timeoutId)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('pagehide', handlePageHide)
+      window.removeEventListener('beforeunload', handlePageHide)
     }
-  }, [
-    backendPlayerLoaded,
-    displayedBalance,
-    safeClickProfit,
-    safeHourlyProfit,
-    upgradeLevels,
-    telegramUser,
-    telegramStartParam,
-    isGameFinished,
-    serverGame?.status,
-  ])
+  }, [backendPlayerLoaded])
 
   const currentLevel = useMemo(() => {
     const reversedLevels = [...LEVELS].reverse()
@@ -1301,7 +799,9 @@ function App() {
       return
     }
 
-    setBalance((currentBalance) => currentBalance + clickProfit)
+    const nextBalance = balanceRef.current + clickProfitRef.current
+    balanceRef.current = nextBalance
+    setBalance(nextBalance)
   }
 
   function buyUpgrade(upgrade: FeedUpgrade) {
@@ -1309,39 +809,50 @@ function App() {
       return
     }
 
-    const currentUpgradeLevel = upgradeLevels[upgrade.id] ?? 0
+    const currentLevels = upgradeLevelsRef.current
+    const currentUpgradeLevel = currentLevels[upgrade.id]
     const currentUpgradePrice = calculateUpgradePrice(
       upgrade.basePrice,
       currentUpgradeLevel,
     )
 
-    if (displayedBalance < currentUpgradePrice) {
+    if (Math.floor(balanceRef.current) < currentUpgradePrice) {
       return
     }
 
-    const currentUpgradeProfit = calculateUpgradeProfit(
-      upgrade.profitIncrease,
-      currentUpgradeLevel,
-    )
-
-    setBalance((currentBalance) => currentBalance - currentUpgradePrice)
-
-    setUpgradeLevels((currentLevels) => ({
+    const nextBalance = balanceRef.current - currentUpgradePrice
+    const nextUpgradeLevels = {
       ...currentLevels,
-      [upgrade.id]: (currentLevels[upgrade.id] ?? 0) + 1,
-    }))
-
-    if (upgrade.type === 'click') {
-      setClickProfit(
-        (currentClickProfit) => currentClickProfit + currentUpgradeProfit,
-      )
+      [upgrade.id]: currentLevels[upgrade.id] + 1,
     }
+    const nextClickProfit =
+      upgrade.type === 'click'
+        ? clickProfitRef.current + upgrade.profitIncrease
+        : clickProfitRef.current
+    const nextHourlyProfit =
+      upgrade.type === 'hourly'
+        ? hourlyProfitRef.current + upgrade.profitIncrease
+        : hourlyProfitRef.current
 
-    if (upgrade.type === 'hourly') {
-      setHourlyProfit(
-        (currentHourlyProfit) => currentHourlyProfit + currentUpgradeProfit,
-      )
-    }
+    balanceRef.current = nextBalance
+    upgradeLevelsRef.current = nextUpgradeLevels
+    clickProfitRef.current = nextClickProfit
+    hourlyProfitRef.current = nextHourlyProfit
+
+    setBalance(nextBalance)
+    setUpgradeLevels(nextUpgradeLevels)
+    setClickProfit(nextClickProfit)
+    setHourlyProfit(nextHourlyProfit)
+
+    void pushProgressToBackend(
+      buildLatestSyncPayload({
+        balance: nextBalance,
+        clickProfit: nextClickProfit,
+        hourlyProfit: nextHourlyProfit,
+        upgradeLevels: nextUpgradeLevels,
+      }),
+      { force: true },
+    )
   }
 
   async function refreshBackendState() {
@@ -1350,6 +861,7 @@ function App() {
     try {
       const response = await getGameState()
 
+      serverGameStatusRef.current = response.game.status
       setServerGame(response.game)
       setServerStatusText(`Backend game: ${response.game.status}`)
 
@@ -1370,91 +882,9 @@ function App() {
         setFinalRewards(null)
       }
     } catch {
+      serverGameStatusRef.current = null
       setServerGame(null)
       setServerStatusText('Backend unavailable, local beta mode')
-    }
-  }
-
-  async function finishBackendGameForTest() {
-    setAdminActionBusy(true)
-    setAdminStatusText('Saving current progress...')
-
-    try {
-      if (serverGame?.status === 'active') {
-        await syncPlayerProgress({
-          telegramUser,
-          startParam: telegramStartParam,
-          balance: displayedBalance,
-          clickProfit: safeClickProfit,
-          hourlyProfit: safeHourlyProfit,
-          upgradeLevels,
-        })
-      }
-
-      setAdminStatusText('Finishing backend timer...')
-
-      const response = await finishGameForTest()
-
-      setServerGame(response.game)
-      setFinalRewards(null)
-      setServerStatusText(`Backend game: ${response.game.status}`)
-      setAdminStatusText('Timer finished. Now press Finalize rewards.')
-
-      await loadLeaderboard(telegramUser)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'unknown error'
-
-      setAdminStatusText(`Finish failed: ${message}`)
-    } finally {
-      setAdminActionBusy(false)
-    }
-  }
-
-  async function finalizeBackendRewardsForTest() {
-    setAdminActionBusy(true)
-    setAdminStatusText('Finalizing rewards...')
-
-    try {
-      const response = await finalizeRewards()
-
-      setServerGame(response.game)
-      setFinalRewards(response.finalRewards)
-      setServerStatusText('Backend game: finished, rewards loaded')
-      setAdminStatusText(
-        response.alreadyFinalized
-          ? 'Rewards were already finalized.'
-          : 'Rewards finalized successfully.',
-      )
-
-      await loadLeaderboard(telegramUser)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'unknown error'
-
-      setAdminStatusText(`Finalize failed: ${message}`)
-    } finally {
-      setAdminActionBusy(false)
-    }
-  }
-
-  async function resetBackendGameForTest() {
-    setAdminActionBusy(true)
-    setAdminStatusText('Resetting test timer...')
-
-    try {
-      const response = await resetGameForTest()
-
-      setServerGame(response.game)
-      setFinalRewards(null)
-      setServerStatusText('Backend game: active')
-      setAdminStatusText('Test timer reset. Balances were not changed.')
-
-      await loadLeaderboard(telegramUser)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'unknown error'
-
-      setAdminStatusText(`Reset failed: ${message}`)
-    } finally {
-      setAdminActionBusy(false)
     }
   }
 
@@ -1471,95 +901,31 @@ function App() {
     }
   }
 
-  const adminTestPanel = showDevTestPanel ? (
-    <div className="admin-test-card">
-      <strong>Local admin test</strong>
-      <span>Тестовая панель видна только в browser beta mode.</span>
-
-      <div className="admin-test-status">
-        <span>Backend:</span>
-        <b>{serverStatusText}</b>
-      </div>
-
-      <div className="admin-test-status">
-        <span>Admin:</span>
-        <b>{adminStatusText}</b>
-      </div>
-
-      {finalRewards && (
-        <div className="admin-test-status">
-          <span>Final rewards:</span>
-          <b>
-            {finalRewards.playersCount} players / {finalRewards.rewardPool} points
-          </b>
-        </div>
-      )}
-
-      <div className="admin-test-actions">
-        <button
-          type="button"
-          disabled={adminActionBusy || serverGame?.status !== 'active'}
-          onClick={finishBackendGameForTest}
-        >
-          Finish 7 days
-        </button>
-
-        <button
-          type="button"
-          disabled={adminActionBusy || serverGame?.status !== 'finished'}
-          onClick={finalizeBackendRewardsForTest}
-        >
-          Finalize rewards
-        </button>
-
-        <button
-          type="button"
-          disabled={adminActionBusy}
-          onClick={refreshBackendState}
-        >
-          Refresh
-        </button>
-
-        <button
-          type="button"
-          disabled={adminActionBusy}
-          onClick={resetBackendGameForTest}
-        >
-          Reset test
-        </button>
-      </div>
-    </div>
-  ) : null
-
   return (
     <div className="app" style={{ backgroundImage: `url(${bgImage})` }}>
       <main className="game-screen">
-        {!isGameFinished && activeTab === 'clicker' && (
-          <section className="top-stats">
-            <div className="stat-card">
-              <span>Прибыль</span>
-              <span>за клик +{formatNumber(safeClickProfit)}</span>
-            </div>
+        <section className="top-stats">
+          <div className="stat-card">
+            <span>Прибыль</span>
+            <span>за клик +{clickProfit}</span>
+          </div>
 
-            <div className="stat-card">
-              <span>Рейтинг</span>
-              <span>{ratingText}</span>
-            </div>
+          <div className="stat-card">
+            <span>Рейтинг</span>
+            <span>{ratingText}</span>
+          </div>
 
-            <div className="stat-card">
-              <span>Прибыль</span>
-              <span>в час</span>
-              <span>+{formatNumber(effectiveHourlyProfit)}</span>
-            </div>
-          </section>
-        )}
+          <div className="stat-card">
+            <span>Прибыль</span>
+            <span>в час</span>
+            <span>+{hourlyProfit}</span>
+          </div>
+        </section>
 
-        {!isGameFinished && activeTab === 'clicker' && (
-          <section className="balance-row">
-            <img className="small-coin" src={coinImage} alt="coin" />
-            <div className="balance">{formatNumber(displayedBalance)}</div>
-          </section>
-        )}
+        <section className="balance-row">
+          <img className="small-coin" src={coinImage} alt="coin" />
+          <div className="balance">{displayedBalance}</div>
+        </section>
 
         {isGameFinished && (
           <section className="final-screen">
@@ -1568,7 +934,7 @@ function App() {
 
             <div className="final-row">
               <span>Твой баланс:</span>
-              <strong>{formatNumber(myReward?.finalBalance ?? displayedBalance)}</strong>
+              <strong>{myReward?.finalBalance ?? displayedBalance}</strong>
             </div>
 
             <div className="final-row">
@@ -1612,8 +978,6 @@ function App() {
             >
               Обновить статус
             </button>
-
-            {adminTestPanel}
           </section>
         )}
 
@@ -1654,99 +1018,41 @@ function App() {
         )}
 
         {!isGameFinished && activeTab === 'feed' && (
-          <section className="tab-screen feed-screen">
-            <div className="feed-wallet-card">
-              <div className="feed-wallet-balance">
-                <span className="feed-wallet-balance-label">Текущий баланс</span>
+          <section className="tab-screen">
+            <h1>Feed</h1>
+            <p>Покупай еду и улучшения для собачки.</p>
 
-                <div className="feed-wallet-balance-row">
-                  <div className="feed-wallet-balance-icon">
-                    <img src={coinImage} alt="coin" />
-                  </div>
-
-                  <strong>{formatNumber(displayedBalance)}</strong>
-                </div>
-
-                <small>монет доступно для покупок</small>
-              </div>
-
-              <div className="feed-wallet-stats-grid">
-                <div className="feed-wallet-stat">
-                  <div className="feed-wallet-icon">⚡</div>
-                  <div className="feed-wallet-copy">
-                    <span className="feed-wallet-title">За клик</span>
-                    <strong>+{formatNumber(safeClickProfit)}</strong>
-                    <small>за одно нажатие</small>
-                  </div>
-                </div>
-
-                <div className="feed-wallet-stat">
-                  <div className="feed-wallet-icon">⏰</div>
-                  <div className="feed-wallet-copy">
-                    <span className="feed-wallet-title">В час</span>
-                    <strong>+{formatNumber(effectiveHourlyProfit)}</strong>
-                    <small>с рефералами</small>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {FEED_SECTIONS.map((section) => {
-              const sectionUpgrades = FEED_UPGRADES.filter(
-                (upgrade) => upgrade.category === section.category,
+            {FEED_UPGRADES.map((upgrade) => {
+              const upgradeLevel = upgradeLevels[upgrade.id]
+              const upgradePrice = calculateUpgradePrice(
+                upgrade.basePrice,
+                upgradeLevel,
               )
 
               return (
-                <div className="feed-section" key={section.category}>
-                  <div className="feed-section-title">
-                    <div>
-                      <strong>{section.title}</strong>
-                      <span>{section.description}</span>
-                    </div>
-                    <b>{sectionUpgrades.length}</b>
+                <div className="upgrade-card" key={upgrade.id}>
+                  <div>
+                    <strong>{upgrade.title}</strong>
+                    <span>Level: {upgradeLevel}</span>
+                    <span>{upgrade.description}</span>
+
+                    {upgrade.type === 'hourly' && (
+                      <>
+                        <span>Онлайн: 100% прибыли</span>
+                        <span>Офлайн: 50% прибыли</span>
+                      </>
+                    )}
+
+                    <span>Цена: {upgradePrice} монет</span>
                   </div>
 
-                  <div className="upgrade-list">
-                    {sectionUpgrades.map((upgrade) => {
-                      const upgradeLevel = upgradeLevels[upgrade.id] ?? 0
-                      const upgradePrice = calculateUpgradePrice(
-                        upgrade.basePrice,
-                        upgradeLevel,
-                      )
-                      const upgradeProfitLabel = getUpgradeProfitLabel(
-                        upgrade,
-                        upgradeLevel,
-                      )
-                      const canBuyUpgrade =
-                        displayedBalance >= upgradePrice && !isGameFinished
-
-                      return (
-                        <div className="upgrade-card" key={upgrade.id}>
-                          <div className="upgrade-icon">{upgrade.emoji}</div>
-
-                          <div className="upgrade-info">
-                            <div className="upgrade-title-row">
-                              <strong>{upgrade.title}</strong>
-                            </div>
-
-                            <div className="upgrade-meta-row">
-                              <span>Lvl {upgradeLevel}</span>
-                              <span>Покупка: {upgradeProfitLabel}</span>
-                            </div>
-                          </div>
-
-                          <button
-                            type="button"
-                            disabled={!canBuyUpgrade}
-                            onClick={() => buyUpgrade(upgrade)}
-                          >
-                            <span>Купить</span>
-                            <b>{formatNumber(upgradePrice)}</b>
-                          </button>
-                        </div>
-                      )
-                    })}
-                  </div>
+                  <button
+                    type="button"
+                    disabled={displayedBalance < upgradePrice || isGameFinished}
+                    onClick={() => buyUpgrade(upgrade)}
+                  >
+                    Купить
+                  </button>
                 </div>
               )
             })}
@@ -1755,113 +1061,80 @@ function App() {
 
         {!isGameFinished && activeTab === 'friends' && (
           <section className="tab-screen friends-screen">
-            <div className="friends-hero-card">
-              <span className="friends-eyebrow">Referral program</span>
-              <h1>Friends</h1>
-              <p>
-                Приглашай игроков, получай +{formatNumber(referralJoinBonus)} монет
-                за каждого друга и +{referralHourlyBonusPercent}% от его прибыли в час.
-              </p>
-            </div>
+            <h1>Friends</h1>
+            <p>Приглашай друзей и получай бонусы.</p>
 
-            <div className="friends-bonus-strip">
-              <div>
-                <span>За приглашение</span>
-                <strong>+{formatNumber(referralJoinBonus)} монет</strong>
+            <div className="telegram-status-card">
+              <strong>Telegram status</strong>
+
+              <div className="telegram-status-row">
+                <span>Mode:</span>
+                <b>{telegramMode ? 'Telegram Mini App' : 'Browser beta mode'}</b>
               </div>
 
-              <div>
-                <span>Пассивный бонус</span>
-                <strong>+{referralHourlyBonusPercent}%/час от друга</strong>
-              </div>
-            </div>
-
-            <div className="friends-reward-grid">
-              <div className="friends-reward-card primary">
-                <span>Бонус за друга</span>
-                <strong>+{formatNumber(referralJoinBonus)}</strong>
-                <small>сразу на баланс</small>
+              <div className="telegram-status-row">
+                <span>User:</span>
+                <b>{getTelegramDisplayName(telegramUser)}</b>
               </div>
 
-              <div className="friends-reward-card">
-                <span>Твой реф. доход</span>
-                <strong>+{formatNumber(referralHourlyBonus)}/ч</strong>
-                <small>{referralHourlyBonusPercent}% от друзей</small>
-              </div>
+              {telegramUser && (
+                <div className="telegram-status-row">
+                  <span>ID:</span>
+                  <b>{telegramUser.id}</b>
+                </div>
+              )}
 
-              <div className="friends-reward-card">
-                <span>Друзей</span>
-                <strong>{referralsCount}</strong>
-                <small>приглашено</small>
+              {telegramStartParam && (
+                <div className="telegram-status-row">
+                  <span>Start param:</span>
+                  <b>{telegramStartParam}</b>
+                </div>
+              )}
+
+              <div className="telegram-status-row">
+                <span>Backend:</span>
+                <b>{serverStatusText}</b>
               </div>
             </div>
 
             <div className="referral-main-card">
-              <div className="referral-main-header">
-                <div>
-                  <span>Твоя ссылка</span>
-                  <strong>Поделись и получи бонус</strong>
-                </div>
-                <div className="referral-main-icon">🔗</div>
-              </div>
+              <strong>Твоя ссылка</strong>
 
               <div className="referral-link-box">{referralLink}</div>
 
               <button type="button" onClick={copyReferralLink}>
-                {referralCopied ? 'Ссылка скопирована!' : 'Скопировать ссылку'}
+                {referralCopied ? 'Скопировано!' : 'Скопировать ссылку'}
               </button>
             </div>
 
-            <div className="friends-list-card">
-              <div className="friends-list-header">
-                <strong>Приглашённые друзья</strong>
-                <span>{referralsCount}</span>
+            <div className="bonus-grid">
+              <div className="bonus-card">
+                <strong>+{referralJoinBonus}</strong>
+                <span>монет за друга</span>
               </div>
 
+              <div className="bonus-card">
+                <strong>{referralsCount}</strong>
+                <span>друзей приглашено</span>
+              </div>
+            </div>
+
+            <div className="friends-list-card">
+              <strong>Приглашённые друзья</strong>
+
               {referrals.length === 0 && (
-                <div className="friend-empty-card">
-                  <div className="friend-empty-icon">🐾</div>
-                  <strong>Пока друзей нет</strong>
-                  <span>Поделись ссылкой с другом.</span>
-                  <small>
-                    За каждого нового игрока ты получишь +{formatNumber(referralJoinBonus)} монет
-                    и +{referralHourlyBonusPercent}% от его прибыли в час.
-                  </small>
+                <div className="friend-row">
+                  <span>Пока друзей нет</span>
+                  <small>Поделись ссылкой</small>
                 </div>
               )}
 
               {referrals.map((referral) => (
                 <div className="friend-row" key={referral.id}>
-                  <div className="friend-avatar">🐶</div>
-
-                  <div className="friend-info">
-                    <span>{getReferralDisplayName(referral)}</span>
-                    <small>{formatNumber(referral.balance)} coins</small>
-                  </div>
-
-                  <div className="friend-bonus">
-                    <strong>+{formatNumber(getSafePositiveNumber(referral.hourlyProfit, 0) * REFERRAL_HOURLY_BONUS_PERCENT)}/ч</strong>
-                    <small>твой бонус</small>
-                  </div>
+                  <span>{getReferralDisplayName(referral)}</span>
+                  <small>{referral.balance} coins</small>
                 </div>
               ))}
-            </div>
-
-            <div className="friends-status-card">
-              <div>
-                <span>Mode</span>
-                <b>{telegramMode ? 'Telegram Mini App' : 'Browser beta mode'}</b>
-              </div>
-
-              <div>
-                <span>User</span>
-                <b>{getTelegramDisplayName(telegramUser)}</b>
-              </div>
-
-              <div>
-                <span>Backend</span>
-                <b>{serverStatusText}</b>
-              </div>
             </div>
           </section>
         )}
@@ -1886,7 +1159,7 @@ function App() {
                   <span>
                     #{player.rank} {player.displayName}
                   </span>
-                  <small>{formatNumber(player.balance)} coins</small>
+                  <small>{player.balance} coins</small>
                 </div>
               ))}
             </div>
@@ -1894,73 +1167,19 @@ function App() {
         )}
 
         {!isGameFinished && activeTab === 'shop' && (
-          <section className="tab-screen shop-screen">
-            <div className="shop-hero-card">
-              <div className="shop-hero-copy">
-                <span className="shop-eyebrow">Tsutsik Store</span>
-                <h1>Shop</h1>
-                <p>Будущий магазин бустов, наборов и косметики. Сейчас это красивый preview без реальных оплат.</p>
-              </div>
+          <section className="tab-screen">
+            <h1>Shop</h1>
+            <p>Тут позже будет донат.</p>
 
-              <div className="shop-hero-coin">
-                <img src={mainCoinImage} alt="coin" />
-              </div>
-            </div>
-
-            <div className="shop-wallet-card">
+            <div className="upgrade-card">
               <div>
-                <span>Твой баланс</span>
-                <strong>{formatNumber(displayedBalance)} coins</strong>
-              </div>
-              <div>
-                <span>Клик</span>
-                <strong>+{formatNumber(safeClickProfit)}</strong>
-              </div>
-              <div>
-                <span>В час</span>
-                <strong>+{formatNumber(effectiveHourlyProfit)}</strong>
-              </div>
-            </div>
-
-            <div className="shop-feature-card">
-              <div className="shop-feature-icon">🎁</div>
-              <div>
-                <span className="shop-card-tag">Featured</span>
-                <strong>Weekly Reward Chest</strong>
-                <p>Еженедельный сундук с бонусами появится после полной настройки экономики.</p>
+                <strong>Coming soon</strong>
+                <span>Донат и платные наборы добавим позже.</span>
               </div>
               <button type="button" disabled>
                 Скоро
               </button>
             </div>
-
-            <div className="shop-grid">
-              {SHOP_ITEMS.map((item) => (
-                <article className="shop-item-card" key={item.title}>
-                  <div className="shop-item-top">
-                    <span className="shop-item-icon">{item.icon}</span>
-                    <span className="shop-item-badge">{item.badge}</span>
-                  </div>
-
-                  <strong>{item.title}</strong>
-                  <p>{item.description}</p>
-
-                  <div className="shop-item-footer">
-                    <span>{item.priceLabel}</span>
-                    <button type="button" disabled>
-                      Locked
-                    </button>
-                  </div>
-                </article>
-              ))}
-            </div>
-
-            <div className="shop-note-card">
-              <strong>Безопасно для beta</strong>
-              <span>Кнопки магазина пока заблокированы, поэтому игроки не смогут случайно купить или сломать экономику.</span>
-            </div>
-
-            {adminTestPanel}
           </section>
         )}
       </main>
