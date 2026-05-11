@@ -168,8 +168,8 @@ export async function getLeaderboard(telegramUser: TelegramUser | null) {
   return parseJsonResponse<LeaderboardDto>(response)
 }
 
-function createPlayerSyncBody(payload: PlayerSyncPayload) {
-  return {
+function serializePlayerSyncPayload(payload: PlayerSyncPayload) {
+  return JSON.stringify({
     telegramId: payload.telegramUser?.id,
     username: payload.telegramUser?.username,
     firstName: payload.telegramUser?.firstName,
@@ -178,7 +178,7 @@ function createPlayerSyncBody(payload: PlayerSyncPayload) {
     clickProfit: payload.clickProfit,
     hourlyProfit: payload.hourlyProfit,
     upgradeLevels: payload.upgradeLevels,
-  }
+  })
 }
 
 export async function syncPlayerProgress(payload: PlayerSyncPayload) {
@@ -187,7 +187,7 @@ export async function syncPlayerProgress(payload: PlayerSyncPayload) {
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(createPlayerSyncBody(payload)),
+    body: serializePlayerSyncPayload(payload),
   })
 
   return parseJsonResponse<{
@@ -198,15 +198,27 @@ export async function syncPlayerProgress(payload: PlayerSyncPayload) {
 }
 
 export function syncPlayerProgressBeacon(payload: PlayerSyncPayload) {
-  if (!navigator.sendBeacon) {
-    return false
+  const url = `${API_BASE_URL}/api/player/sync`
+  const body = serializePlayerSyncPayload(payload)
+
+  if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
+    const blob = new Blob([body], {
+      type: 'application/json',
+    })
+
+    return navigator.sendBeacon(url, blob)
   }
 
-  const body = new Blob([JSON.stringify(createPlayerSyncBody(payload))], {
-    type: 'application/json',
-  })
+  void fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body,
+    keepalive: true,
+  }).catch(() => undefined)
 
-  return navigator.sendBeacon(`${API_BASE_URL}/api/player/sync`, body)
+  return false
 }
 
 export async function getFinalRewards() {

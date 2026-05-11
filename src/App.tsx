@@ -39,6 +39,7 @@ import dogLevel4 from './assets/dogs_lvl/4.png'
 import dogLevel5 from './assets/dogs_lvl/5.png'
 import dogLevel6 from './assets/dogs_lvl/6.png'
 import dogLevel7 from './assets/dogs_lvl/7.png'
+import dogLevel8 from './assets/dogs_lvl/8.png'
 
 import clickerIcon from './assets/icons/clicker.png'
 import feedIcon from './assets/icons/feed.png'
@@ -101,7 +102,8 @@ const OFFLINE_HOURLY_MULTIPLIER = 0.5
 const ONLINE_HOURLY_MULTIPLIER = 1
 const PRICE_GROWTH = 1.75
 const PROFIT_GROWTH = 1.25
-const AUTO_SYNC_DELAY_MS = 2500
+const AUTO_SYNC_DELAY_MS = 1500
+const SOCIAL_REFRESH_INTERVAL_MS = 10000
 
 const BOT_USERNAME = 'MinersEmpire_bot'
 const REFERRAL_JOIN_BONUS = 5000
@@ -670,7 +672,7 @@ const DOG_IMAGES: Record<number, string> = {
   5: dogLevel5,
   6: dogLevel6,
   7: dogLevel7,
-  8: dogLevel7,
+  8: dogLevel8,
 }
 
 const TABS: Array<{
@@ -927,8 +929,12 @@ function App() {
   const [backendPlayerLoaded, setBackendPlayerLoaded] = useState(false)
 
   const latestSyncPayloadRef = useRef<PlayerSyncPayload | null>(null)
-  const pendingSyncPayloadRef = useRef<PlayerSyncPayload | null>(null)
   const syncInFlightRef = useRef(false)
+  const syncVersionRef = useRef(0)
+  const lastSuccessfulSyncVersionRef = useRef(0)
+  const lastSocialRefreshRef = useRef(0)
+  const backendReadyRef = useRef(false)
+  const gameSyncAllowedRef = useRef(false)
 
   const [referrals, setReferrals] = useState<ReferralDto[]>([])
   const [referralsCount, setReferralsCount] = useState(0)
@@ -1028,6 +1034,58 @@ function App() {
     }
   }
 
+  async function syncLatestProgress(force = false) {
+    if (!backendReadyRef.current || !gameSyncAllowedRef.current) {
+      return
+    }
+
+    if (syncInFlightRef.current) {
+      return
+    }
+
+    const payload = latestSyncPayloadRef.current
+
+    if (!payload) {
+      return
+    }
+
+    const versionToSync = syncVersionRef.current
+
+    if (!force && lastSuccessfulSyncVersionRef.current >= versionToSync) {
+      return
+    }
+
+    syncInFlightRef.current = true
+
+    try {
+      const response = await syncPlayerProgress(payload)
+
+      lastSuccessfulSyncVersionRef.current = Math.max(
+        lastSuccessfulSyncVersionRef.current,
+        versionToSync,
+      )
+
+      if (response.game) {
+        setServerGame(response.game)
+        setServerStatusText(`Backend game: ${response.game.status}, progress saved`)
+      }
+
+      const now = Date.now()
+
+      if (now - lastSocialRefreshRef.current >= SOCIAL_REFRESH_INTERVAL_MS) {
+        lastSocialRefreshRef.current = now
+
+        await loadReferrals(payload.telegramUser)
+        await loadLeaderboard(payload.telegramUser)
+      }
+    } catch (error) {
+      console.error('Auto sync failed:', error)
+      setServerStatusText('Backend sync failed')
+    } finally {
+      syncInFlightRef.current = false
+    }
+  }
+
   useEffect(() => {
     async function initApp() {
       initTelegramMiniApp()
@@ -1048,9 +1106,34 @@ function App() {
         const loadedPlayer = currentPlayerResponse.player
 
         if (loadedPlayer) {
-          setBalance(getSafePositiveNumber(loadedPlayer.balance, 0))
-          setClickProfit(getSafePositiveNumber(loadedPlayer.clickProfit, 1) || 1)
-          setHourlyProfit(getSafePositiveNumber(loadedPlayer.hourlyProfit, 0))
+          const rawLocalSave = localStorage.getItem(SAVE_KEY)
+          let localSavedAt = 0
+
+          if (rawLocalSave) {
+            try {
+              localSavedAt = getSafeNumber(
+                (JSON.parse(rawLocalSave) as Partial<GameSave>).savedAt,
+                0,
+              )
+            } catch {
+              localSavedAt = 0
+            }
+          }
+
+          const backendSavedAt = new Date(loadedPlayer.updatedAt).getTime()
+          const shouldUseBackendPlayer =
+            !rawLocalSave || backendSavedAt > localSavedAt + 5000
+
+          if (shouldUseBackendPlayer) {
+            setBalance(getSafePositiveNumber(loadedPlayer.balance, 0))
+            setClickProfit(getSafePositiveNumber(loadedPlayer.clickProfit, 1) || 1)
+            setHourlyProfit(getSafePositiveNumber(loadedPlayer.hourlyProfit, 0))
+          } else {
+            setServerStatusText(
+              `Backend game: ${currentPlayerResponse.game.status}, local progress kept`,
+            )
+          }
+
           setUpgradeLevels((currentLevels) =>
             normalizeUpgradeLevels({
               ...currentLevels,
@@ -1136,6 +1219,8 @@ function App() {
       hourlyProfit: safeHourlyProfit,
       upgradeLevels,
     }
+
+    syncVersionRef.current += 1
   }, [
     telegramUser,
     telegramStartParam,
@@ -1145,103 +1230,57 @@ function App() {
     upgradeLevels,
   ])
 
-  async function syncProgressToBackend(payload: PlayerSyncPayload) {
-    if (syncInFlightRef.current) {
-      pendingSyncPayloadRef.current = payload
+  useEffect(() => {
+    backendReadyRef.current = backendPlayerLoaded
+  }, [backendPlayerLoaded])
 
-      return
-    }
-
-    syncInFlightRef.current = true
-
-    try {
-      const response = await syncPlayerProgress(payload)
-
-      if (response.game) {
-        setServerGame(response.game)
-        setServerStatusText(`Backend game: ${response.game.status}`)
-      }
-
-      await loadReferrals(payload.telegramUser)
-      await loadLeaderboard(payload.telegramUser)
-    } catch (error) {
-      console.error('Auto sync failed:', error)
-      setServerStatusText('Backend sync failed')
-    } finally {
-      syncInFlightRef.current = false
-
-      const pendingPayload = pendingSyncPayloadRef.current
-
-      if (pendingPayload) {
-        pendingSyncPayloadRef.current = null
-        void syncProgressToBackend(pendingPayload)
-      }
-    }
-  }
+  useEffect(() => {
+    gameSyncAllowedRef.current = !isGameFinished && serverGame?.status === 'active'
+  }, [isGameFinished, serverGame?.status])
 
   useEffect(() => {
     if (!backendPlayerLoaded) {
       return
     }
 
-    if (isGameFinished || serverGame?.status !== 'active') {
-      return
-    }
-
-    function syncLatestProgress() {
-      const payload = latestSyncPayloadRef.current
-
-      if (!payload) {
-        return
-      }
-
-      void syncProgressToBackend(payload)
-    }
-
-    syncLatestProgress()
+    void syncLatestProgress(true)
 
     const intervalId = window.setInterval(() => {
-      syncLatestProgress()
+      void syncLatestProgress(false)
     }, AUTO_SYNC_DELAY_MS)
 
     return () => {
       window.clearInterval(intervalId)
     }
-  }, [backendPlayerLoaded, isGameFinished, serverGame?.status])
+  }, [backendPlayerLoaded])
 
   useEffect(() => {
-    if (!backendPlayerLoaded) {
-      return
-    }
-
-    if (isGameFinished || serverGame?.status !== 'active') {
-      return
-    }
-
-    function syncBeforeClose() {
+    function flushProgressBeforeClose() {
       const payload = latestSyncPayloadRef.current
 
-      if (!payload) {
+      if (!payload || !backendReadyRef.current || !gameSyncAllowedRef.current) {
         return
       }
 
       syncPlayerProgressBeacon(payload)
     }
 
-    function syncWhenHidden() {
+    function handleVisibilityChange() {
       if (document.visibilityState === 'hidden') {
-        syncBeforeClose()
+        flushProgressBeforeClose()
       }
     }
 
-    window.addEventListener('pagehide', syncBeforeClose)
-    document.addEventListener('visibilitychange', syncWhenHidden)
+    window.addEventListener('pagehide', flushProgressBeforeClose)
+    window.addEventListener('beforeunload', flushProgressBeforeClose)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
 
     return () => {
-      window.removeEventListener('pagehide', syncBeforeClose)
-      document.removeEventListener('visibilitychange', syncWhenHidden)
+      window.removeEventListener('pagehide', flushProgressBeforeClose)
+      window.removeEventListener('beforeunload', flushProgressBeforeClose)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [backendPlayerLoaded, isGameFinished, serverGame?.status])
+  }, [])
 
   const currentLevel = useMemo(() => {
     const reversedLevels = [...LEVELS].reverse()
@@ -1299,7 +1338,11 @@ function App() {
       upgrade.profitIncrease,
       currentUpgradeLevel,
     )
-    const nextBalance = displayedBalance - currentUpgradePrice
+    const nextBalance = Math.max(displayedBalance - currentUpgradePrice, 0)
+    const nextUpgradeLevels = normalizeUpgradeLevels({
+      ...upgradeLevels,
+      [upgrade.id]: currentUpgradeLevel + 1,
+    })
     const nextClickProfit =
       upgrade.type === 'click'
         ? safeClickProfit + currentUpgradeProfit
@@ -1308,17 +1351,7 @@ function App() {
       upgrade.type === 'hourly'
         ? safeHourlyProfit + currentUpgradeProfit
         : safeHourlyProfit
-    const nextUpgradeLevels = normalizeUpgradeLevels({
-      ...upgradeLevels,
-      [upgrade.id]: currentUpgradeLevel + 1,
-    })
-
-    setBalance(nextBalance)
-    setUpgradeLevels(nextUpgradeLevels)
-    setClickProfit(nextClickProfit)
-    setHourlyProfit(nextHourlyProfit)
-
-    latestSyncPayloadRef.current = {
+    const nextPayload: PlayerSyncPayload = {
       telegramUser,
       startParam: telegramStartParam,
       balance: nextBalance,
@@ -1327,9 +1360,15 @@ function App() {
       upgradeLevels: nextUpgradeLevels,
     }
 
-    if (backendPlayerLoaded && serverGame?.status === 'active') {
-      void syncProgressToBackend(latestSyncPayloadRef.current)
-    }
+    setBalance(nextBalance)
+    setUpgradeLevels(nextUpgradeLevels)
+    setClickProfit(nextClickProfit)
+    setHourlyProfit(nextHourlyProfit)
+
+    latestSyncPayloadRef.current = nextPayload
+    syncVersionRef.current += 1
+
+    void syncLatestProgress(true)
   }
 
   async function refreshBackendState() {
