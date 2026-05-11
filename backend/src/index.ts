@@ -12,12 +12,6 @@ const PORT = Number(process.env.PORT) || 4000
 const REWARD_POOL = 20
 const REFERRAL_JOIN_BONUS = 5000
 const REFERRAL_HOURLY_BONUS_PERCENT = 0.05
-const ADMIN_TEST_ENABLED = process.env.ADMIN_TEST_ENABLED === 'true'
-const FRONTEND_ORIGINS = (process.env.FRONTEND_ORIGIN ?? '')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean)
-
 
 const GAME_STATE_ID = 'main'
 const GAME_DURATION_DAYS = 7
@@ -27,43 +21,12 @@ const INITIAL_GAME_STARTED_AT = process.env.GAME_STARTED_AT
   ? new Date(process.env.GAME_STARTED_AT)
   : new Date()
 
-app.use(
-  cors({
-    origin(origin, callback) {
-      if (!origin || FRONTEND_ORIGINS.length === 0 || FRONTEND_ORIGINS.includes(origin)) {
-        callback(null, true)
-        return
-      }
-
-      callback(new Error(`CORS blocked origin: ${origin}`))
-    },
-  }),
-)
+app.use(cors())
 app.use(express.json())
-
-function requireAdminTestMode(
-  _req: express.Request,
-  res: express.Response,
-  next: express.NextFunction,
-) {
-  if (ADMIN_TEST_ENABLED) {
-    next()
-    return
-  }
-
-  res.status(403).json({
-    error: 'admin test endpoints are disabled',
-  })
-}
 
 type GameStatus = 'active' | 'finished'
 
-type UpgradeLevels = {
-  smallBone: number
-  bigBone: number
-  autoFarm1: number
-  autoFarm2: number
-}
+type UpgradeLevels = Record<string, number>
 
 type PlayerSyncRequest = {
   telegramId?: number
@@ -124,18 +87,34 @@ function getReferrerIdFromStartParam(startParam: unknown) {
 }
 
 function normalizeUpgradeLevels(value: unknown): UpgradeLevels | null {
-  if (!value || typeof value !== 'object') {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null
   }
 
-  const levels = value as Partial<UpgradeLevels>
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([upgradeId, level]) => {
+      const parsedLevel = Math.floor(toSafeNumber(level, 0))
 
-  return {
-    smallBone: Number(levels.smallBone) || 0,
-    bigBone: Number(levels.bigBone) || 0,
-    autoFarm1: Number(levels.autoFarm1) || 0,
-    autoFarm2: Number(levels.autoFarm2) || 0,
-  }
+      return [upgradeId, Math.max(0, parsedLevel)]
+    }),
+  )
+}
+
+function getLegacyUpgradeLevel(upgradeLevels: UpgradeLevels, upgradeId: string) {
+  return Math.max(0, Math.floor(toSafeNumber(upgradeLevels[upgradeId], 0)))
+}
+
+function getStoredUpgradeLevels(player: { upgradeLevels?: unknown | null; smallBoneLevel: number; bigBoneLevel: number; autoFarm1Level: number; autoFarm2Level: number }) {
+  return (
+    normalizeUpgradeLevels(player.upgradeLevels) ??
+    normalizeUpgradeLevels({
+      smallBone: player.smallBoneLevel,
+      bigBone: player.bigBoneLevel,
+      autoFarm1: player.autoFarm1Level,
+      autoFarm2: player.autoFarm2Level,
+    }) ??
+    {}
+  )
 }
 
 function roundReward(value: number) {
@@ -179,6 +158,7 @@ function playerToDto(player: {
   bigBoneLevel: number
   autoFarm1Level: number
   autoFarm2Level: number
+  upgradeLevels?: unknown | null
   referrerId: string | null
   referralBonusClaimed: boolean
   createdAt: Date
@@ -192,12 +172,7 @@ function playerToDto(player: {
     balance: player.balance,
     clickProfit: player.clickProfit,
     hourlyProfit: player.hourlyProfit,
-    upgradeLevels: {
-      smallBone: player.smallBoneLevel,
-      bigBone: player.bigBoneLevel,
-      autoFarm1: player.autoFarm1Level,
-      autoFarm2: player.autoFarm2Level,
-    },
+    upgradeLevels: getStoredUpgradeLevels(player),
     referrerId: player.referrerId,
     referralBonusClaimed: player.referralBonusClaimed,
     createdAt: player.createdAt,
@@ -421,7 +396,7 @@ app.get('/api/game/state', async (_req, res) => {
   })
 })
 
-app.post('/api/game/finish-for-test', requireAdminTestMode, async (_req, res) => {
+app.post('/api/game/finish-for-test', async (_req, res) => {
   await prisma.gameState.update({
     where: {
       id: GAME_STATE_ID,
@@ -439,7 +414,7 @@ app.post('/api/game/finish-for-test', requireAdminTestMode, async (_req, res) =>
   })
 })
 
-app.post('/api/game/reset-for-test', requireAdminTestMode, async (_req, res) => {
+app.post('/api/game/reset-for-test', async (_req, res) => {
   const gameStartedAt = new Date()
   const gameEndsAt = new Date(gameStartedAt.getTime() + GAME_DURATION_MS)
 
@@ -553,10 +528,11 @@ app.post('/api/player/sync', async (req, res) => {
       balance: Math.max(0, Math.floor(body.balance)),
       clickProfit: Math.max(1, Math.floor(body.clickProfit)),
       hourlyProfit: Math.max(0, Math.floor(body.hourlyProfit)),
-      smallBoneLevel: upgradeLevels.smallBone,
-      bigBoneLevel: upgradeLevels.bigBone,
-      autoFarm1Level: upgradeLevels.autoFarm1,
-      autoFarm2Level: upgradeLevels.autoFarm2,
+      upgradeLevels,
+      smallBoneLevel: getLegacyUpgradeLevel(upgradeLevels, 'smallBone'),
+      bigBoneLevel: getLegacyUpgradeLevel(upgradeLevels, 'bigBone'),
+      autoFarm1Level: getLegacyUpgradeLevel(upgradeLevels, 'autoFarm1'),
+      autoFarm2Level: getLegacyUpgradeLevel(upgradeLevels, 'autoFarm2'),
     },
     update: {
       telegramId:
@@ -566,10 +542,11 @@ app.post('/api/player/sync', async (req, res) => {
       balance: Math.max(0, Math.floor(body.balance)),
       clickProfit: Math.max(1, Math.floor(body.clickProfit)),
       hourlyProfit: Math.max(0, Math.floor(body.hourlyProfit)),
-      smallBoneLevel: upgradeLevels.smallBone,
-      bigBoneLevel: upgradeLevels.bigBone,
-      autoFarm1Level: upgradeLevels.autoFarm1,
-      autoFarm2Level: upgradeLevels.autoFarm2,
+      upgradeLevels,
+      smallBoneLevel: getLegacyUpgradeLevel(upgradeLevels, 'smallBone'),
+      bigBoneLevel: getLegacyUpgradeLevel(upgradeLevels, 'bigBone'),
+      autoFarm1Level: getLegacyUpgradeLevel(upgradeLevels, 'autoFarm1'),
+      autoFarm2Level: getLegacyUpgradeLevel(upgradeLevels, 'autoFarm2'),
     },
   })
 
@@ -878,8 +855,7 @@ async function startServer() {
   await getOrCreateGameState()
 
   app.listen(PORT, () => {
-    console.log(`Miners Empire backend is running on port ${PORT}`)
-    console.log(`Admin test endpoints enabled: ${ADMIN_TEST_ENABLED}`)
+    console.log(`Miners Empire backend is running on http://localhost:${PORT}`)
   })
 }
 

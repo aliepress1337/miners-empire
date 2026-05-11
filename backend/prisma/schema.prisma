@@ -29,6 +29,7 @@ model Player {
   bigBoneLevel    Int      @default(0)
   autoFarm1Level  Int      @default(0)
   autoFarm2Level  Int      @default(0)
+  upgradeLevels   Json?
 
   referrerId      String?
   referralBonusClaimed Boolean @default(false)

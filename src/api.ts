@@ -85,6 +85,19 @@ const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ??
   'http://localhost:4000'
 
+function buildPlayerSyncBody(payload: PlayerSyncPayload) {
+  return {
+    telegramId: payload.telegramUser?.id,
+    username: payload.telegramUser?.username,
+    firstName: payload.telegramUser?.firstName,
+    startParam: payload.startParam,
+    balance: payload.balance,
+    clickProfit: payload.clickProfit,
+    hourlyProfit: payload.hourlyProfit,
+    upgradeLevels: payload.upgradeLevels,
+  }
+}
+
 async function parseJsonResponse<T>(response: Response): Promise<T> {
   const data = await response.json().catch(() => null)
 
@@ -174,16 +187,7 @@ export async function syncPlayerProgress(payload: PlayerSyncPayload) {
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      telegramId: payload.telegramUser?.id,
-      username: payload.telegramUser?.username,
-      firstName: payload.telegramUser?.firstName,
-      startParam: payload.startParam,
-      balance: payload.balance,
-      clickProfit: payload.clickProfit,
-      hourlyProfit: payload.hourlyProfit,
-      upgradeLevels: payload.upgradeLevels,
-    }),
+    body: JSON.stringify(buildPlayerSyncBody(payload)),
   })
 
   return parseJsonResponse<{
@@ -250,4 +254,29 @@ export async function finalizeRewards() {
     game: GameStateDto
     finalRewards: FinalRewardsDto
   }>(response)
+}
+
+
+export function syncPlayerProgressBeforeExit(payload: PlayerSyncPayload) {
+  const body = JSON.stringify(buildPlayerSyncBody(payload))
+  const url = `${API_BASE_URL}/api/player/sync`
+
+  if (navigator.sendBeacon) {
+    const blob = new Blob([body], {
+      type: 'application/json',
+    })
+
+    if (navigator.sendBeacon(url, blob)) {
+      return
+    }
+  }
+
+  void fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body,
+    keepalive: true,
+  }).catch(() => undefined)
 }

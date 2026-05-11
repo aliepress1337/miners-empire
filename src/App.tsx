@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 import {
@@ -11,6 +11,7 @@ import {
   getPlayerReferrals,
   resetGameForTest,
   syncPlayerProgress,
+  syncPlayerProgressBeforeExit,
   type FinalRewardsDto,
   type GameStateDto,
   type LeaderboardPlayerDto,
@@ -41,7 +42,7 @@ import dogLevel7 from './assets/dogs_lvl/7.png'
 import clickerIcon from './assets/icons/clicker.png'
 import feedIcon from './assets/icons/feed.png'
 import friendsIcon from './assets/icons/friends.png'
-import rankingIcon from './assets/icons/ranking.png'
+import earnIcon from './assets/icons/earn.png'
 import shopIcon from './assets/icons/shop.png'
 
 type LevelConfig = {
@@ -100,6 +101,7 @@ const ONLINE_HOURLY_MULTIPLIER = 1
 const PRICE_GROWTH = 1.75
 const PROFIT_GROWTH = 1.25
 const AUTO_SYNC_DELAY_MS = 2500
+const FORCE_SYNC_INTERVAL_MS = 15000
 
 const BOT_USERNAME = 'MinersEmpire_bot'
 const REFERRAL_JOIN_BONUS = 5000
@@ -679,7 +681,7 @@ const TABS: Array<{
   { id: 'clicker', label: 'Clicker', icon: clickerIcon },
   { id: 'feed', label: 'Feed', icon: feedIcon },
   { id: 'friends', label: 'Friends', icon: friendsIcon },
-  { id: 'earn', label: 'Ranking', icon: rankingIcon },
+  { id: 'earn', label: 'Earn', icon: earnIcon },
   { id: 'shop', label: 'Shop', icon: shopIcon },
 ]
 
@@ -935,6 +937,10 @@ function App() {
     useState<LeaderboardPlayerDto | null>(null)
   const [playersCount, setPlayersCount] = useState(0)
 
+  const latestSavePayloadRef = useRef<PlayerSyncPayload | null>(null)
+  const syncInFlightRef = useRef(false)
+  const syncAgainAfterCurrentRef = useRef(false)
+
   const displayedBalance = Math.floor(getSafePositiveNumber(balance, 0))
   const safeClickProfit = getSafePositiveNumber(clickProfit, 1) || 1
   const safeHourlyProfit = getSafePositiveNumber(hourlyProfit, 0)
@@ -1105,6 +1111,70 @@ function App() {
   }, [balance, clickProfit, hourlyProfit, upgradeLevels, gameStartedAt, gameEndsAt])
 
   useEffect(() => {
+    latestSavePayloadRef.current = {
+      telegramUser,
+      startParam: telegramStartParam,
+      balance: displayedBalance,
+      clickProfit: safeClickProfit,
+      hourlyProfit: safeHourlyProfit,
+      upgradeLevels,
+    }
+  }, [
+    telegramUser,
+    telegramStartParam,
+    displayedBalance,
+    safeClickProfit,
+    safeHourlyProfit,
+    upgradeLevels,
+  ])
+
+  useEffect(() => {
+    if (!backendPlayerLoaded || isGameFinished || serverGame?.status !== 'active') {
+      return
+    }
+
+    const syncBeforeExit = () => {
+      const latestPayload = latestSavePayloadRef.current
+
+      if (latestPayload) {
+        syncPlayerProgressBeforeExit(latestPayload)
+      }
+    }
+
+    const syncWhenHidden = () => {
+      if (document.visibilityState === 'hidden') {
+        syncBeforeExit()
+      }
+    }
+
+    window.addEventListener('pagehide', syncBeforeExit)
+    document.addEventListener('visibilitychange', syncWhenHidden)
+
+    return () => {
+      window.removeEventListener('pagehide', syncBeforeExit)
+      document.removeEventListener('visibilitychange', syncWhenHidden)
+    }
+  }, [backendPlayerLoaded, isGameFinished, serverGame?.status])
+
+  useEffect(() => {
+    if (!backendPlayerLoaded || isGameFinished || serverGame?.status !== 'active') {
+      return
+    }
+
+    const intervalId = window.setInterval(() => {
+      const latestPayload = latestSavePayloadRef.current
+
+      if (latestPayload) {
+        syncPlayerProgressBeforeExit(latestPayload)
+      }
+    }, FORCE_SYNC_INTERVAL_MS)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [backendPlayerLoaded, isGameFinished, serverGame?.status])
+
+  useEffect(() => {
     if (effectiveHourlyProfit <= 0 || isGameFinished) {
       return
     }
@@ -1131,33 +1201,25 @@ function App() {
     }
 
     const timeoutId = window.setTimeout(async () => {
+      const latestPayload = latestSavePayloadRef.current
+
+      if (!latestPayload) {
+        return
+      }
+
+      if (syncInFlightRef.current) {
+        syncAgainAfterCurrentRef.current = true
+        return
+      }
+
+      syncInFlightRef.current = true
+
       try {
-        const response = await syncPlayerProgress({
-          telegramUser,
-          startParam: telegramStartParam,
-          balance: displayedBalance,
-          clickProfit: safeClickProfit,
-          hourlyProfit: safeHourlyProfit,
-          upgradeLevels,
-        })
+        const response = await syncPlayerProgress(latestPayload)
 
         if (response.game) {
           setServerGame(response.game)
           setServerStatusText(`Backend game: ${response.game.status}`)
-        }
-
-        const syncedPlayer = response.player
-
-        if (syncedPlayer) {
-          setBalance(getSafePositiveNumber(syncedPlayer.balance, 0))
-          setClickProfit(getSafePositiveNumber(syncedPlayer.clickProfit, 1) || 1)
-          setHourlyProfit(getSafePositiveNumber(syncedPlayer.hourlyProfit, 0))
-          setUpgradeLevels((currentLevels) =>
-            normalizeUpgradeLevels({
-              ...currentLevels,
-              ...syncedPlayer.upgradeLevels,
-            }),
-          )
         }
 
         await loadReferrals(telegramUser)
@@ -1165,6 +1227,28 @@ function App() {
       } catch (error) {
         console.error('Auto sync failed:', error)
         setServerStatusText('Backend sync failed')
+      } finally {
+        syncInFlightRef.current = false
+
+        if (syncAgainAfterCurrentRef.current) {
+          syncAgainAfterCurrentRef.current = false
+
+          const newestPayload = latestSavePayloadRef.current
+
+          if (newestPayload) {
+            try {
+              const response = await syncPlayerProgress(newestPayload)
+
+              if (response.game) {
+                setServerGame(response.game)
+                setServerStatusText(`Backend game: ${response.game.status}`)
+              }
+            } catch (error) {
+              console.error('Follow-up sync failed:', error)
+              setServerStatusText('Backend sync failed')
+            }
+          }
+        }
       }
     }, AUTO_SYNC_DELAY_MS)
 
@@ -1174,8 +1258,8 @@ function App() {
   }, [
     backendPlayerLoaded,
     displayedBalance,
-    clickProfit,
-    hourlyProfit,
+    safeClickProfit,
+    safeHourlyProfit,
     upgradeLevels,
     telegramUser,
     telegramStartParam,
@@ -1549,11 +1633,6 @@ function App() {
                   style={{ width: `${progressPercent}%` }}
                 />
               </div>
-
-              <div className="level-progress-target">
-                <span>Next level</span>
-                <strong>{nextLevel ? formatNumber(nextLevel.minCoins) : 'MAX'}</strong>
-              </div>
             </section>
 
             <section className="dog-button-wrapper">
@@ -1788,54 +1867,26 @@ function App() {
         )}
 
         {!isGameFinished && activeTab === 'earn' && (
-          <section className="tab-screen ranking-screen">
-            <div className="ranking-hero-card">
-              <span className="ranking-eyebrow">Leaderboard</span>
-              <h1>Ranking</h1>
-              <p>Топ игроков по балансу за текущий 7-дневный фарм.</p>
-            </div>
+          <section className="tab-screen">
+            <h1>Earn</h1>
+            <p>Топ игроков по балансу.</p>
 
-            <div className="ranking-summary-grid">
-              <div className="ranking-summary-card">
-                <span>Игроков</span>
-                <strong>{formatNumber(playersCount)}</strong>
-              </div>
-
-              <div className="ranking-summary-card">
-                <span>Твоё место</span>
-                <strong>{currentLeaderboardPlayer ? `#${currentLeaderboardPlayer.rank}` : '...'}</strong>
-              </div>
-            </div>
-
-            <div className="ranking-list-card">
-              <div className="ranking-list-header">
-                <strong>Таблица лидеров</strong>
-                <span>{leaderboard.length}</span>
-              </div>
+            <div className="friends-list-card">
+              <strong>Leaderboard</strong>
 
               {leaderboard.length === 0 && (
-                <div className="ranking-empty-card">
-                  <strong>Рейтинг загружается</strong>
-                  <span>Подожди пару секунд или проверь подключение backend.</span>
+                <div className="friend-row">
+                  <span>Рейтинг загружается</span>
+                  <small>{playersCount} players</small>
                 </div>
               )}
 
               {leaderboard.map((player) => (
-                <div
-                  className={`ranking-row ${currentLeaderboardPlayer?.id === player.id ? 'current-player' : ''}`}
-                  key={player.id}
-                >
-                  <div className="ranking-place">#{player.rank}</div>
-
-                  <div className="ranking-player-info">
-                    <strong>{player.displayName}</strong>
-                    <span>{currentLeaderboardPlayer?.id === player.id ? 'Твой профиль' : 'Игрок'}</span>
-                  </div>
-
-                  <div className="ranking-player-balance">
-                    <strong>{formatNumber(player.balance)}</strong>
-                    <span>coins</span>
-                  </div>
+                <div className="friend-row" key={player.id}>
+                  <span>
+                    #{player.rank} {player.displayName}
+                  </span>
+                  <small>{formatNumber(player.balance)} coins</small>
                 </div>
               ))}
             </div>
