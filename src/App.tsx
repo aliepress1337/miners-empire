@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 import {
@@ -11,10 +11,12 @@ import {
   getPlayerReferrals,
   resetGameForTest,
   syncPlayerProgress,
+  syncPlayerProgressBeacon,
   type FinalRewardsDto,
   type GameStateDto,
   type LeaderboardPlayerDto,
   type PlayerRewardDto,
+  type PlayerSyncPayload,
   type ReferralDto,
 } from './api'
 
@@ -924,6 +926,10 @@ function App() {
   const [finalRewards, setFinalRewards] = useState<FinalRewardsDto | null>(null)
   const [backendPlayerLoaded, setBackendPlayerLoaded] = useState(false)
 
+  const latestSyncPayloadRef = useRef<PlayerSyncPayload | null>(null)
+  const pendingSyncPayloadRef = useRef<PlayerSyncPayload | null>(null)
+  const syncInFlightRef = useRef(false)
+
   const [referrals, setReferrals] = useState<ReferralDto[]>([])
   const [referralsCount, setReferralsCount] = useState(0)
   const [referralJoinBonus, setReferralJoinBonus] = useState(REFERRAL_JOIN_BONUS)
@@ -1122,6 +1128,58 @@ function App() {
   }, [effectiveHourlyProfit, isGameFinished])
 
   useEffect(() => {
+    latestSyncPayloadRef.current = {
+      telegramUser,
+      startParam: telegramStartParam,
+      balance: displayedBalance,
+      clickProfit: safeClickProfit,
+      hourlyProfit: safeHourlyProfit,
+      upgradeLevels,
+    }
+  }, [
+    telegramUser,
+    telegramStartParam,
+    displayedBalance,
+    safeClickProfit,
+    safeHourlyProfit,
+    upgradeLevels,
+  ])
+
+  async function syncProgressToBackend(payload: PlayerSyncPayload) {
+    if (syncInFlightRef.current) {
+      pendingSyncPayloadRef.current = payload
+
+      return
+    }
+
+    syncInFlightRef.current = true
+
+    try {
+      const response = await syncPlayerProgress(payload)
+
+      if (response.game) {
+        setServerGame(response.game)
+        setServerStatusText(`Backend game: ${response.game.status}`)
+      }
+
+      await loadReferrals(payload.telegramUser)
+      await loadLeaderboard(payload.telegramUser)
+    } catch (error) {
+      console.error('Auto sync failed:', error)
+      setServerStatusText('Backend sync failed')
+    } finally {
+      syncInFlightRef.current = false
+
+      const pendingPayload = pendingSyncPayloadRef.current
+
+      if (pendingPayload) {
+        pendingSyncPayloadRef.current = null
+        void syncProgressToBackend(pendingPayload)
+      }
+    }
+  }
+
+  useEffect(() => {
     if (!backendPlayerLoaded) {
       return
     }
@@ -1130,58 +1188,60 @@ function App() {
       return
     }
 
-    const timeoutId = window.setTimeout(async () => {
-      try {
-        const response = await syncPlayerProgress({
-          telegramUser,
-          startParam: telegramStartParam,
-          balance: displayedBalance,
-          clickProfit: safeClickProfit,
-          hourlyProfit: safeHourlyProfit,
-          upgradeLevels,
-        })
+    function syncLatestProgress() {
+      const payload = latestSyncPayloadRef.current
 
-        if (response.game) {
-          setServerGame(response.game)
-          setServerStatusText(`Backend game: ${response.game.status}`)
-        }
-
-        const syncedPlayer = response.player
-
-        if (syncedPlayer) {
-          setBalance(getSafePositiveNumber(syncedPlayer.balance, 0))
-          setClickProfit(getSafePositiveNumber(syncedPlayer.clickProfit, 1) || 1)
-          setHourlyProfit(getSafePositiveNumber(syncedPlayer.hourlyProfit, 0))
-          setUpgradeLevels((currentLevels) =>
-            normalizeUpgradeLevels({
-              ...currentLevels,
-              ...syncedPlayer.upgradeLevels,
-            }),
-          )
-        }
-
-        await loadReferrals(telegramUser)
-        await loadLeaderboard(telegramUser)
-      } catch (error) {
-        console.error('Auto sync failed:', error)
-        setServerStatusText('Backend sync failed')
+      if (!payload) {
+        return
       }
+
+      void syncProgressToBackend(payload)
+    }
+
+    syncLatestProgress()
+
+    const intervalId = window.setInterval(() => {
+      syncLatestProgress()
     }, AUTO_SYNC_DELAY_MS)
 
     return () => {
-      window.clearTimeout(timeoutId)
+      window.clearInterval(intervalId)
     }
-  }, [
-    backendPlayerLoaded,
-    displayedBalance,
-    clickProfit,
-    hourlyProfit,
-    upgradeLevels,
-    telegramUser,
-    telegramStartParam,
-    isGameFinished,
-    serverGame?.status,
-  ])
+  }, [backendPlayerLoaded, isGameFinished, serverGame?.status])
+
+  useEffect(() => {
+    if (!backendPlayerLoaded) {
+      return
+    }
+
+    if (isGameFinished || serverGame?.status !== 'active') {
+      return
+    }
+
+    function syncBeforeClose() {
+      const payload = latestSyncPayloadRef.current
+
+      if (!payload) {
+        return
+      }
+
+      syncPlayerProgressBeacon(payload)
+    }
+
+    function syncWhenHidden() {
+      if (document.visibilityState === 'hidden') {
+        syncBeforeClose()
+      }
+    }
+
+    window.addEventListener('pagehide', syncBeforeClose)
+    document.addEventListener('visibilitychange', syncWhenHidden)
+
+    return () => {
+      window.removeEventListener('pagehide', syncBeforeClose)
+      document.removeEventListener('visibilitychange', syncWhenHidden)
+    }
+  }, [backendPlayerLoaded, isGameFinished, serverGame?.status])
 
   const currentLevel = useMemo(() => {
     const reversedLevels = [...LEVELS].reverse()
@@ -1239,24 +1299,36 @@ function App() {
       upgrade.profitIncrease,
       currentUpgradeLevel,
     )
+    const nextBalance = displayedBalance - currentUpgradePrice
+    const nextClickProfit =
+      upgrade.type === 'click'
+        ? safeClickProfit + currentUpgradeProfit
+        : safeClickProfit
+    const nextHourlyProfit =
+      upgrade.type === 'hourly'
+        ? safeHourlyProfit + currentUpgradeProfit
+        : safeHourlyProfit
+    const nextUpgradeLevels = normalizeUpgradeLevels({
+      ...upgradeLevels,
+      [upgrade.id]: currentUpgradeLevel + 1,
+    })
 
-    setBalance((currentBalance) => currentBalance - currentUpgradePrice)
+    setBalance(nextBalance)
+    setUpgradeLevels(nextUpgradeLevels)
+    setClickProfit(nextClickProfit)
+    setHourlyProfit(nextHourlyProfit)
 
-    setUpgradeLevels((currentLevels) => ({
-      ...currentLevels,
-      [upgrade.id]: (currentLevels[upgrade.id] ?? 0) + 1,
-    }))
-
-    if (upgrade.type === 'click') {
-      setClickProfit(
-        (currentClickProfit) => currentClickProfit + currentUpgradeProfit,
-      )
+    latestSyncPayloadRef.current = {
+      telegramUser,
+      startParam: telegramStartParam,
+      balance: nextBalance,
+      clickProfit: nextClickProfit,
+      hourlyProfit: nextHourlyProfit,
+      upgradeLevels: nextUpgradeLevels,
     }
 
-    if (upgrade.type === 'hourly') {
-      setHourlyProfit(
-        (currentHourlyProfit) => currentHourlyProfit + currentUpgradeProfit,
-      )
+    if (backendPlayerLoaded && serverGame?.status === 'active') {
+      void syncProgressToBackend(latestSyncPayloadRef.current)
     }
   }
 

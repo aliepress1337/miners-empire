@@ -168,22 +168,26 @@ export async function getLeaderboard(telegramUser: TelegramUser | null) {
   return parseJsonResponse<LeaderboardDto>(response)
 }
 
+function createPlayerSyncBody(payload: PlayerSyncPayload) {
+  return {
+    telegramId: payload.telegramUser?.id,
+    username: payload.telegramUser?.username,
+    firstName: payload.telegramUser?.firstName,
+    startParam: payload.startParam,
+    balance: payload.balance,
+    clickProfit: payload.clickProfit,
+    hourlyProfit: payload.hourlyProfit,
+    upgradeLevels: payload.upgradeLevels,
+  }
+}
+
 export async function syncPlayerProgress(payload: PlayerSyncPayload) {
   const response = await fetch(`${API_BASE_URL}/api/player/sync`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      telegramId: payload.telegramUser?.id,
-      username: payload.telegramUser?.username,
-      firstName: payload.telegramUser?.firstName,
-      startParam: payload.startParam,
-      balance: payload.balance,
-      clickProfit: payload.clickProfit,
-      hourlyProfit: payload.hourlyProfit,
-      upgradeLevels: payload.upgradeLevels,
-    }),
+    body: JSON.stringify(createPlayerSyncBody(payload)),
   })
 
   return parseJsonResponse<{
@@ -191,6 +195,18 @@ export async function syncPlayerProgress(payload: PlayerSyncPayload) {
     game: GameStateDto
     player: PlayerDto
   }>(response)
+}
+
+export function syncPlayerProgressBeacon(payload: PlayerSyncPayload) {
+  if (!navigator.sendBeacon) {
+    return false
+  }
+
+  const body = new Blob([JSON.stringify(createPlayerSyncBody(payload))], {
+    type: 'application/json',
+  })
+
+  return navigator.sendBeacon(`${API_BASE_URL}/api/player/sync`, body)
 }
 
 export async function getFinalRewards() {
