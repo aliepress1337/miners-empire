@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent,
+} from 'react'
 import './App.css'
 
 import {
@@ -902,7 +908,83 @@ function findMyReward(
   )
 }
 
+function isLocalDevelopmentHost() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  return (
+    window.location.hostname === 'localhost' ||
+    window.location.hostname === '127.0.0.1' ||
+    window.location.hostname === '0.0.0.0'
+  )
+}
+
+function isPhoneLikeDevice() {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    return true
+  }
+
+  const userAgent = navigator.userAgent.toLowerCase()
+  const isMobileUserAgent =
+    /android|iphone|ipod|windows phone|iemobile|opera mini|mobile/.test(
+      userAgent,
+    )
+  const isIpadOs =
+    /macintosh/.test(userAgent) && Number(navigator.maxTouchPoints ?? 0) > 1
+  const hasTouch = Number(navigator.maxTouchPoints ?? 0) > 0
+  const hasCoarsePointer = window.matchMedia?.('(pointer: coarse)').matches ?? false
+  const shortestScreenSide = Math.min(
+    window.screen?.width ?? window.innerWidth,
+    window.screen?.height ?? window.innerHeight,
+  )
+
+  return (
+    isMobileUserAgent ||
+    isIpadOs ||
+    (hasTouch && hasCoarsePointer && shortestScreenSide <= 820)
+  )
+}
+
+function shouldBlockDesktopPlay() {
+  return !isLocalDevelopmentHost() && !isPhoneLikeDevice()
+}
+
+function DesktopBlockedScreen() {
+  return (
+    <div
+      className="app desktop-blocked-app"
+      style={{ backgroundImage: `url(${bgImage})` }}
+    >
+      <main className="desktop-blocked-screen">
+        <div className="desktop-blocked-card">
+          <img
+            className="desktop-blocked-coin"
+            src={coinImage}
+            alt="Tsutsik coin"
+          />
+
+          <h1>Играть можно только с телефона</h1>
+
+          <p>
+            Чтобы всё было честно, Tsutsik Game недоступна с компьютера или
+            ноутбука. Открой игру в Telegram-приложении на телефоне.
+          </p>
+
+          <div className="desktop-blocked-note">
+            📱 Телефон → Telegram → Miners Empire Bot → Open App
+          </div>
+        </div>
+      </main>
+    </div>
+  )
+}
+
 function App() {
+  if (shouldBlockDesktopPlay()) {
+    return <DesktopBlockedScreen />
+  }
+
   const savedGame = useMemo(() => loadSavedGame(), [])
 
   const [balance, setBalance] = useState(savedGame.balance)
@@ -1180,6 +1262,70 @@ function App() {
   }, [])
 
   useEffect(() => {
+    const nonPassiveOptions: AddEventListenerOptions = { passive: false }
+    let lastTouchEndTime = 0
+
+    function preventDefaultGesture(event: Event) {
+      event.preventDefault()
+    }
+
+    function handleTouchMove(event: TouchEvent) {
+      const maybeScaledEvent = event as TouchEvent & { scale?: number }
+
+      if (
+        event.touches.length > 1 ||
+        (typeof maybeScaledEvent.scale === 'number' && maybeScaledEvent.scale !== 1)
+      ) {
+        event.preventDefault()
+      }
+    }
+
+    function handleTouchEnd(event: TouchEvent) {
+      const now = Date.now()
+
+      if (now - lastTouchEndTime <= 320) {
+        event.preventDefault()
+      }
+
+      lastTouchEndTime = now
+    }
+
+    function handleWheel(event: WheelEvent) {
+      if (event.ctrlKey) {
+        event.preventDefault()
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (!event.ctrlKey && !event.metaKey) {
+        return
+      }
+
+      if (['+', '-', '=', '0'].includes(event.key)) {
+        event.preventDefault()
+      }
+    }
+
+    document.addEventListener('gesturestart', preventDefaultGesture, nonPassiveOptions)
+    document.addEventListener('gesturechange', preventDefaultGesture, nonPassiveOptions)
+    document.addEventListener('gestureend', preventDefaultGesture, nonPassiveOptions)
+    document.addEventListener('touchmove', handleTouchMove, nonPassiveOptions)
+    document.addEventListener('touchend', handleTouchEnd, nonPassiveOptions)
+    window.addEventListener('wheel', handleWheel, nonPassiveOptions)
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      document.removeEventListener('gesturestart', preventDefaultGesture)
+      document.removeEventListener('gesturechange', preventDefaultGesture)
+      document.removeEventListener('gestureend', preventDefaultGesture)
+      document.removeEventListener('touchmove', handleTouchMove)
+      document.removeEventListener('touchend', handleTouchEnd)
+      window.removeEventListener('wheel', handleWheel)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [])
+
+  useEffect(() => {
     const save: GameSave = {
       balance,
       clickProfit,
@@ -1316,7 +1462,16 @@ function App() {
       return
     }
 
-    setBalance((currentBalance) => currentBalance + clickProfit)
+    setBalance((currentBalance) => currentBalance + safeClickProfit)
+  }
+
+  function handleDogPointerDown(event: PointerEvent<HTMLButtonElement>) {
+    if (event.pointerType === 'mouse' && event.button !== 0) {
+      return
+    }
+
+    event.preventDefault()
+    handleDogClick()
   }
 
   function buyUpgrade(upgrade: FeedUpgrade) {
@@ -1671,7 +1826,7 @@ function App() {
               <button
                 className="dog-button"
                 type="button"
-                onClick={handleDogClick}
+                onPointerDown={handleDogPointerDown}
                 disabled={isGameFinished}
               >
                 <img className="main-coin" src={mainCoinImage} alt="main coin" />
