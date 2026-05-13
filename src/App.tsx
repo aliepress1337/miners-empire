@@ -139,6 +139,7 @@ type GameSave = {
 
 const SAVE_KEY = 'tsutsik-game-save'
 const WEB_LOGIN_USER_KEY = 'tsutsik-web-login-user'
+const SAVE_PLAYER_KEY = 'tsutsik-game-save-player'
 
 const GAME_DURATION_DAYS = 14
 const GAME_DURATION_MS = GAME_DURATION_DAYS * 24 * 60 * 60 * 1000
@@ -1275,6 +1276,32 @@ function clearStoredWebLoginUser() {
   localStorage.removeItem(WEB_LOGIN_USER_KEY)
 }
 
+function getSavePlayerKey(telegramUser: TelegramUser | null) {
+  if (!telegramUser?.id) {
+    return null
+  }
+
+  return `telegram:${telegramUser.id}`
+}
+
+function loadSavePlayerKey() {
+  try {
+    return localStorage.getItem(SAVE_PLAYER_KEY)
+  } catch {
+    return null
+  }
+}
+
+function savePlayerKey(telegramUser: TelegramUser | null) {
+  const playerKey = getSavePlayerKey(telegramUser)
+
+  if (!playerKey) {
+    return
+  }
+
+  localStorage.setItem(SAVE_PLAYER_KEY, playerKey)
+}
+
 function DesktopBlockedScreen() {
   return (
     <div
@@ -1719,7 +1746,13 @@ function App() {
         setGameEndsAt(serverGameEndsAt)
 
         const loadedPlayer = currentPlayerResponse.player
-        const rawLocalSave = localStorage.getItem(SAVE_KEY)
+        const currentSavePlayerKey = getSavePlayerKey(currentTelegramUser)
+        const storedSavePlayerKey = loadSavePlayerKey()
+        const shouldForceBackendForDifferentPlayer =
+          Boolean(currentSavePlayerKey) && storedSavePlayerKey !== currentSavePlayerKey
+        const rawLocalSave = shouldForceBackendForDifferentPlayer
+          ? null
+          : localStorage.getItem(SAVE_KEY)
         let localSavedAt = 0
         let localGameStartedAt = savedGame.gameStartedAt
 
@@ -1744,6 +1777,7 @@ function App() {
         if (loadedPlayer) {
           const backendSavedAt = new Date(loadedPlayer.updatedAt).getTime()
           const shouldUseBackendPlayer =
+            shouldForceBackendForDifferentPlayer ||
             shouldResetForNewServerGame ||
             !rawLocalSave ||
             backendSavedAt > localSavedAt + 5000
@@ -1788,6 +1822,8 @@ function App() {
           setBanReason(null)
           setServerStatusText('Official release reset applied')
         }
+
+        savePlayerKey(currentTelegramUser)
 
         await loadReferrals(currentTelegramUser)
         await loadLeaderboard(currentTelegramUser)
@@ -2559,6 +2595,7 @@ function App() {
     }
 
     saveStoredWebLoginUser(confirmedUser)
+    savePlayerKey(confirmedUser)
     setTelegramUser(confirmedUser)
     setWebLoginRequired(false)
     setWebLoginStatusText('Вход подтверждён. Загружаем игру...')
