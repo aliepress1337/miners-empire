@@ -1283,15 +1283,6 @@ function getSavePlayerKey(telegramUser: TelegramUser | null) {
 
   return `telegram:${telegramUser.id}`
 }
-
-function loadSavePlayerKey() {
-  try {
-    return localStorage.getItem(SAVE_PLAYER_KEY)
-  } catch {
-    return null
-  }
-}
-
 function savePlayerKey(telegramUser: TelegramUser | null) {
   const playerKey = getSavePlayerKey(telegramUser)
 
@@ -1746,27 +1737,18 @@ function App() {
         setGameEndsAt(serverGameEndsAt)
 
         const loadedPlayer = currentPlayerResponse.player
-        const currentSavePlayerKey = getSavePlayerKey(currentTelegramUser)
-        const storedSavePlayerKey = loadSavePlayerKey()
-        const shouldForceBackendForDifferentPlayer =
-          Boolean(currentSavePlayerKey) && storedSavePlayerKey !== currentSavePlayerKey
-        const rawLocalSave = shouldForceBackendForDifferentPlayer
-          ? null
-          : localStorage.getItem(SAVE_KEY)
-        let localSavedAt = 0
+        const rawLocalSave = localStorage.getItem(SAVE_KEY)
         let localGameStartedAt = savedGame.gameStartedAt
 
         if (rawLocalSave) {
           try {
             const parsedLocalSave = JSON.parse(rawLocalSave) as Partial<GameSave>
 
-            localSavedAt = getSafeNumber(parsedLocalSave.savedAt, 0)
             localGameStartedAt = getSafeNumber(
               parsedLocalSave.gameStartedAt,
               savedGame.gameStartedAt,
             )
           } catch {
-            localSavedAt = 0
             localGameStartedAt = savedGame.gameStartedAt
           }
         }
@@ -1775,38 +1757,10 @@ function App() {
           Boolean(rawLocalSave) && serverGameStartedAt > localGameStartedAt + 5000
 
         if (loadedPlayer) {
-          const backendSavedAt = new Date(loadedPlayer.updatedAt).getTime()
-          const shouldUseBackendPlayer =
-            shouldForceBackendForDifferentPlayer ||
-            shouldResetForNewServerGame ||
-            !rawLocalSave ||
-            backendSavedAt > localSavedAt + 5000
-
-          if (shouldUseBackendPlayer) {
-            applyFullPlayerServerState(loadedPlayer)
-          } else {
-            setLevel10UnlockStep(
-              getSafeLevel10UnlockStep(loadedPlayer.level10UnlockStep),
-            )
-            setLevel10AnimationCompleted(
-              loadedPlayer.level10AnimationCompleted === true,
-            )
-
-            if (loadedPlayer.level10AnimationCompleted === true) {
-              setIsLevel10VideoPlaying(false)
-            }
-
-            applyPlayerServerState(loadedPlayer)
-            setUpgradeLevels((currentLevels) =>
-              normalizeUpgradeLevels({
-                ...currentLevels,
-                ...loadedPlayer.upgradeLevels,
-              }),
-            )
-            setServerStatusText(
-              `Backend game: ${currentPlayerResponse.game.status}, local progress kept`,
-            )
-          }
+          applyFullPlayerServerState(loadedPlayer)
+          setServerStatusText(
+            `Backend game: ${currentPlayerResponse.game.status}, server progress loaded`,
+          )
         } else if (shouldResetForNewServerGame) {
           setBalance(0)
           setClickProfit(1)
