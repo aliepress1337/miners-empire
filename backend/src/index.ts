@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client'
+import { randomUUID } from 'crypto'
 import cors from 'cors'
 import dotenv from 'dotenv'
 import express from 'express'
@@ -31,6 +32,8 @@ const ADMIN_TELEGRAM_IDS = new Set(
 )
 const TELEGRAM_BOT_TOKEN =
   process.env.TELEGRAM_BOT_TOKEN ?? process.env.BOT_TOKEN ?? ''
+const TELEGRAM_BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME ?? 'MinersEmpire_bot'
+const WEB_LOGIN_CODE_TTL_MS = 10 * 60 * 1000
 
 const INITIAL_GAME_STARTED_AT = process.env.GAME_STARTED_AT
   ? new Date(process.env.GAME_STARTED_AT)
@@ -69,6 +72,19 @@ type PlayerReward = {
   rewardAmount: number
   promoCode: string
 }
+
+type WebLoginSession = {
+  sessionId: string
+  code: string
+  expiresAt: number
+  telegramUser: {
+    id: number
+    username: string | null
+    firstName: string | null
+  } | null
+}
+
+const webLoginSessions = new Map<string, WebLoginSession>()
 
 function getPlayerId(body: Partial<PlayerSyncRequest>) {
   if (typeof body.telegramId === 'number') {
@@ -367,6 +383,45 @@ function getCommandParts(text: string) {
 
 function getPostText(text: string) {
   return text.replace(/^\/post(?:@\w+)?\s*/i, '').trim()
+}
+
+function cleanupExpiredWebLoginSessions() {
+  const now = Date.now()
+
+  for (const [sessionId, session] of webLoginSessions.entries()) {
+    if (session.expiresAt <= now) {
+      webLoginSessions.delete(sessionId)
+    }
+  }
+}
+
+function generateWebLoginCode() {
+  cleanupExpiredWebLoginSessions()
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const code = String(Math.floor(100000 + Math.random() * 900000))
+    const isAlreadyUsed = [...webLoginSessions.values()].some(
+      (session) => session.code === code,
+    )
+
+    if (!isAlreadyUsed) {
+      return code
+    }
+  }
+
+  return String(Math.floor(100000 + Math.random() * 900000))
+}
+
+function findWebLoginSessionByCode(code: string) {
+  cleanupExpiredWebLoginSessions()
+
+  for (const session of webLoginSessions.values()) {
+    if (session.code === code) {
+      return session
+    }
+  }
+
+  return null
 }
 
 function getLargestPhotoFileId(
@@ -900,6 +955,67 @@ app.get('/api/player/current', async (req, res) => {
   })
 })
 
+
+app.post('/api/web-login/start', async (_req, res) => {
+  const sessionId = randomUUID()
+  const code = generateWebLoginCode()
+  const expiresAt = Date.now() + WEB_LOGIN_CODE_TTL_MS
+
+  webLoginSessions.set(sessionId, {
+    sessionId,
+    code,
+    expiresAt,
+    telegramUser: null,
+  })
+
+  res.json({
+    status: 'ok',
+    sessionId,
+    code,
+    expiresAt: new Date(expiresAt).toISOString(),
+    botUsername: TELEGRAM_BOT_USERNAME,
+  })
+})
+
+app.get('/api/web-login/status', async (req, res) => {
+  cleanupExpiredWebLoginSessions()
+
+  const sessionId = typeof req.query.sessionId === 'string'
+    ? req.query.sessionId
+    : ''
+  const session = webLoginSessions.get(sessionId)
+
+  if (!session) {
+    res.status(404).json({
+      status: 'expired',
+      confirmed: false,
+    })
+    return
+  }
+
+  if (!session.telegramUser) {
+    res.json({
+      status: 'pending',
+      confirmed: false,
+      expiresAt: new Date(session.expiresAt).toISOString(),
+    })
+    return
+  }
+
+  const player = await prisma.player.findUnique({
+    where: {
+      id: `telegram:${session.telegramUser.id}`,
+    },
+  })
+
+  res.json({
+    status: 'confirmed',
+    confirmed: true,
+    telegramUser: session.telegramUser,
+    player: player ? playerToDto(player) : null,
+  })
+})
+
 app.post('/api/player/sync', async (req, res) => {
   const gameState = await getOrCreateGameState()
   const gameStatus = getGameStatus(gameState.gameEndsAt)
@@ -1346,7 +1462,7 @@ app.post('/api/telegram/webhook', async (req, res) => {
   const update = req.body as {
     message?: {
       chat?: { id?: string | number }
-      from?: { id?: number; username?: string }
+      from?: { id?: number; username?: string; first_name?: string }
       text?: string
       caption?: string
       photo?: Array<{
@@ -1371,10 +1487,61 @@ app.post('/api/telegram/webhook', async (req, res) => {
     '/post',
     '/officialrelease',
     '/startrelease',
+    '/login',
   ])
 
   if (!message || !chatId || !supportedCommands.has(commandName)) {
     res.json({ status: 'ok', ignored: true })
+    return
+  }
+
+  if (commandName === '/login') {
+    const code = getCommandParts(text)[1]?.trim() ?? ''
+    const session = /^\d{6}$/.test(code) ? findWebLoginSessionByCode(code) : null
+
+    if (!session || !message.from?.id) {
+      await sendTelegramMessage(
+        chatId,
+        '❌ Код входа не найден или уже истёк. Открой веб-версию игры и получи новый код.',
+      )
+      res.json({ status: 'ok', error: 'invalid_web_login_code' })
+      return
+    }
+
+    session.telegramUser = {
+      id: message.from.id,
+      username: message.from.username ?? null,
+      firstName: message.from.first_name ?? null,
+    }
+
+    await prisma.player.upsert({
+      where: {
+        id: `telegram:${message.from.id}`,
+      },
+      create: {
+        id: `telegram:${message.from.id}`,
+        telegramId: String(message.from.id),
+        username: message.from.username ?? null,
+        firstName: message.from.first_name ?? null,
+        balance: 0,
+        clickProfit: 1,
+        hourlyProfit: 0,
+        upgradeLevels: {},
+        unlockedCoinSkins: [],
+      },
+      update: {
+        telegramId: String(message.from.id),
+        username: message.from.username ?? null,
+        firstName: message.from.first_name ?? null,
+      },
+    })
+
+    await sendTelegramMessage(
+      chatId,
+      '✅ Вход подтверждён. Теперь вернись на сайт с веб-версией игры.',
+    )
+
+    res.json({ status: 'ok', confirmed: true })
     return
   }
 
