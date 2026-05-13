@@ -677,6 +677,67 @@ const DEFAULT_UPGRADE_LEVELS: UpgradeLevels = FEED_UPGRADES.reduce<UpgradeLevels
   {},
 )
 
+
+const FEED_UPGRADE_STORE_ORDER = [
+  'crumbs',
+  'waterBowl',
+  'smallBone',
+  'comfyMat',
+  'puppyCookie',
+  'autoFarm1',
+  'tastyBone',
+  'puppyBed',
+  'meatSnack',
+  'toyBasket',
+  'dogBowl',
+  'autoFarm2',
+  'snackBox',
+  'dogHouse',
+  'trainingWhistle',
+  'trainerVisit',
+  'premiumKibble',
+  'goldenBowl',
+  'silverLeash',
+  'boneGarden',
+  'championMeal',
+  'sleepyGuard',
+  'proteinPlate',
+  'vipKennel',
+  'powerSteak',
+  'autoKitchen',
+  'royalBone',
+  'guardDogCamp',
+  'goldenCollar',
+  'kennelNetwork',
+  'goldenFeast',
+  'foodTruck',
+  'legendaryFeast',
+  'tsutsikFactory',
+  'mythicBowl',
+  'boneFactory',
+  'feastHall',
+  'boneMine',
+  'legendaryTrainer',
+  'cityShelter',
+  'worldDogCup',
+  'royalKitchen',
+  'tsutsikBank',
+  'championEmpire',
+] as const
+
+const FEED_UPGRADES_BY_ID = new Map(
+  FEED_UPGRADES.map((upgrade) => [upgrade.id, upgrade]),
+)
+
+const FEED_UPGRADES_IN_STORE_ORDER = [
+  ...FEED_UPGRADE_STORE_ORDER
+    .map((upgradeId) => FEED_UPGRADES_BY_ID.get(upgradeId))
+    .filter((upgrade): upgrade is FeedUpgrade => Boolean(upgrade)),
+  ...FEED_UPGRADES.filter(
+    (upgrade) => !FEED_UPGRADE_STORE_ORDER.includes(upgrade.id as (typeof FEED_UPGRADE_STORE_ORDER)[number]),
+  ),
+]
+
 const SHOP_ITEMS: ShopItem[] = [
   {
     title: 'AFK Ферма на ослах',
@@ -1359,24 +1420,7 @@ function App() {
   const baseEffectiveHourlyProfit = safeHourlyProfit + referralHourlyBonus
   const effectiveHourlyProfit = baseEffectiveHourlyProfit * activeProfitMultiplier
   const maxLevel = LEVELS.length
-  const sortedFeedUpgrades = useMemo(() => {
-    return [...FEED_UPGRADES].sort((leftUpgrade, rightUpgrade) => {
-      const leftPrice = calculateUpgradePrice(
-        leftUpgrade.basePrice,
-        upgradeLevels[leftUpgrade.id] ?? 0,
-      )
-      const rightPrice = calculateUpgradePrice(
-        rightUpgrade.basePrice,
-        upgradeLevels[rightUpgrade.id] ?? 0,
-      )
-
-      if (leftPrice !== rightPrice) {
-        return leftPrice - rightPrice
-      }
-
-      return leftUpgrade.basePrice - rightUpgrade.basePrice
-    })
-  }, [upgradeLevels])
+  const feedUpgradesInStoreOrder = FEED_UPGRADES_IN_STORE_ORDER
 
   const localGameFinished = currentTime >= gameEndsAt
   const serverGameFinished = serverGame?.status === 'finished'
@@ -2876,14 +2920,14 @@ function App() {
             <div className="feed-section">
               <div className="feed-section-title">
                 <div>
-                  <strong>Апгрейды по цене</strong>
-                  <span>{FEED_UPGRADES_DESCRIPTION}. Предметы теперь идут от дешёвых к дорогим.</span>
+                  <strong>Апгрейды</strong>
+                  <span>{FEED_UPGRADES_DESCRIPTION}. Порядок фиксированный: клик и прибыль в час идут по очереди.</span>
                 </div>
-                <b>{sortedFeedUpgrades.length}</b>
+                <b>{feedUpgradesInStoreOrder.length}</b>
               </div>
 
               <div className="upgrade-list">
-                {sortedFeedUpgrades.map((upgrade) => {
+                {feedUpgradesInStoreOrder.map((upgrade) => {
                   const upgradeLevel = upgradeLevels[upgrade.id] ?? 0
                   const upgradePrice = calculateUpgradePrice(
                     upgrade.basePrice,
