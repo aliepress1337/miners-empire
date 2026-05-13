@@ -1,0 +1,4 @@
+ALTER TABLE "Player" ADD COLUMN "afkFullFarmUnlocked" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "Player" ADD COLUMN "unluckyUntil" TIMESTAMP(3);
+ALTER TABLE "Player" ADD COLUMN "bannedAt" TIMESTAMP(3);
+ALTER TABLE "Player" ADD COLUMN "banReason" TEXT;

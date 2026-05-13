@@ -12,10 +12,31 @@ const PORT = Number(process.env.PORT) || 4000
 const REWARD_POOL = 20
 const REFERRAL_JOIN_BONUS = 5000
 const REFERRAL_HOURLY_BONUS_PERCENT = 0.05
+const TOP_1_REWARD_MULTIPLIER = 1.3
+const TOP_2_REWARD_MULTIPLIER = 1.2
+const TOP_3_REWARD_MULTIPLIER = 1.1
+const SERVER_MAX_TAPS_PER_SECOND = 28
+const SERVER_SYNC_GRACE_SECONDS = 7
+const SERVER_BALANCE_GAIN_GRACE_COINS = 25000
+const OFFLINE_HOURLY_MULTIPLIER = 0.5
+const BOOSTED_OFFLINE_HOURLY_MULTIPLIER = 1
+const UNLUCKY_PROFIT_MULTIPLIER = 0.25
 
 const GAME_STATE_ID = 'main'
-const GAME_DURATION_DAYS = 7
+const GAME_DURATION_DAYS = 14
 const GAME_DURATION_MS = GAME_DURATION_DAYS * 24 * 60 * 60 * 1000
+const LEVEL_10_CRACK_STEPS = 3
+const COIN_SKIN_IDS = [1, 2, 3, 4]
+const UNLUCKY_DURATION_MS = 24 * 60 * 60 * 1000
+const DEFAULT_ADMIN_TELEGRAM_IDS = '973268077'
+const ADMIN_TELEGRAM_IDS = new Set(
+  (process.env.ADMIN_TELEGRAM_IDS ?? DEFAULT_ADMIN_TELEGRAM_IDS)
+    .split(',')
+    .map((telegramId) => telegramId.trim())
+    .filter(Boolean),
+)
+const TELEGRAM_BOT_TOKEN =
+  process.env.TELEGRAM_BOT_TOKEN ?? process.env.BOT_TOKEN ?? ''
 
 const INITIAL_GAME_STARTED_AT = process.env.GAME_STARTED_AT
   ? new Date(process.env.GAME_STARTED_AT)
@@ -37,6 +58,9 @@ type PlayerSyncRequest = {
   clickProfit: number
   hourlyProfit: number
   upgradeLevels: UpgradeLevels
+  level10UnlockStep?: number
+  level10AnimationCompleted?: boolean
+  selectedCoinSkin?: number | null
 }
 
 type PlayerReward = {
@@ -121,10 +145,457 @@ function roundReward(value: number) {
   return Math.round(value * 1000000) / 1000000
 }
 
+function getRankRewardMultiplier(rank: number) {
+  if (rank === 1) {
+    return TOP_1_REWARD_MULTIPLIER
+  }
+
+  if (rank === 2) {
+    return TOP_2_REWARD_MULTIPLIER
+  }
+
+  if (rank === 3) {
+    return TOP_3_REWARD_MULTIPLIER
+  }
+
+  return 1
+}
+
+function getRewardScore(finalBalance: number, rank: number) {
+  return Math.max(0, finalBalance) * getRankRewardMultiplier(rank)
+}
+
 function toSafeNumber(value: unknown, fallback = 0) {
   const parsedValue = Number(value)
 
   return Number.isFinite(parsedValue) ? parsedValue : fallback
+}
+
+function isDateInFuture(value: Date | null | undefined, now: Date) {
+  return Boolean(value && value.getTime() > now.getTime())
+}
+
+function getAntiCheatSafeBalance(options: {
+  existingPlayer: {
+    id: string
+    balance: number
+    clickProfit: number
+    hourlyProfit: number
+    afkFullFarmUnlocked: boolean
+    unluckyUntil: Date | null
+    updatedAt: Date
+  } | null
+  requestedBalance: number
+  requestedClickProfit: number
+  requestedHourlyProfit: number
+}) {
+  const {
+    existingPlayer,
+    requestedBalance,
+    requestedClickProfit,
+    requestedHourlyProfit,
+  } = options
+
+  if (!existingPlayer || existingPlayer.id.startsWith('browser:')) {
+    return requestedBalance
+  }
+
+  const now = new Date()
+  const storedBalance = Math.max(0, Math.floor(existingPlayer.balance))
+
+  if (requestedBalance <= storedBalance) {
+    return requestedBalance
+  }
+
+  const elapsedSeconds = Math.max(
+    (now.getTime() - existingPlayer.updatedAt.getTime()) / 1000,
+    0,
+  )
+  const safeElapsedSeconds = elapsedSeconds + SERVER_SYNC_GRACE_SECONDS
+  const clickProfitLimit = Math.max(
+    1,
+    Math.floor(Math.max(existingPlayer.clickProfit, requestedClickProfit)),
+  )
+  const hourlyProfitLimit = Math.max(
+    0,
+    Math.floor(Math.max(existingPlayer.hourlyProfit, requestedHourlyProfit)),
+  )
+  const offlineMultiplier = existingPlayer.afkFullFarmUnlocked
+    ? BOOSTED_OFFLINE_HOURLY_MULTIPLIER
+    : OFFLINE_HOURLY_MULTIPLIER
+  const unluckyMultiplier = isDateInFuture(existingPlayer.unluckyUntil, now)
+    ? UNLUCKY_PROFIT_MULTIPLIER
+    : 1
+  const allowedClickGain =
+    clickProfitLimit * SERVER_MAX_TAPS_PER_SECOND * safeElapsedSeconds * unluckyMultiplier
+  const allowedPassiveGain =
+    (hourlyProfitLimit * offlineMultiplier * safeElapsedSeconds * unluckyMultiplier) / 3600
+  const allowedBalance = Math.floor(
+    storedBalance +
+      allowedClickGain +
+      allowedPassiveGain +
+      SERVER_BALANCE_GAIN_GRACE_COINS,
+  )
+
+  if (requestedBalance > allowedBalance) {
+    console.warn('Anti-clicker balance clamp:', {
+      playerId: existingPlayer.id,
+      storedBalance,
+      requestedBalance,
+      allowedBalance,
+      elapsedSeconds,
+    })
+  }
+
+  return Math.min(requestedBalance, Math.max(storedBalance, allowedBalance))
+}
+
+function normalizeLevel10UnlockStep(value: unknown) {
+  const parsedValue = Math.floor(toSafeNumber(value, 0))
+
+  if (parsedValue <= 0) {
+    return 0
+  }
+
+  return Math.min(parsedValue, LEVEL_10_CRACK_STEPS)
+}
+
+function normalizeLevel10AnimationCompleted(value: unknown) {
+  return value === true
+}
+
+
+function normalizeCoinSkinId(value: unknown) {
+  const parsedValue = Math.floor(toSafeNumber(value, 0))
+
+  return COIN_SKIN_IDS.includes(parsedValue) ? parsedValue : null
+}
+
+function normalizeUnlockedCoinSkins(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [] as number[]
+  }
+
+  return Array.from(
+    new Set(
+      value
+        .map((skinId) => normalizeCoinSkinId(skinId))
+        .filter((skinId): skinId is number => skinId !== null),
+    ),
+  ).sort((leftSkinId, rightSkinId) => leftSkinId - rightSkinId)
+}
+
+function normalizeSelectedCoinSkin(
+  value: unknown,
+  unlockedCoinSkins: number[],
+) {
+  const skinId = normalizeCoinSkinId(value)
+
+  if (!skinId) {
+    return null
+  }
+
+  return unlockedCoinSkins.includes(skinId) ? skinId : null
+}
+
+function addUnlockedCoinSkin(unlockedCoinSkins: number[], skinId: number) {
+  return Array.from(new Set([...unlockedCoinSkins, skinId])).sort(
+    (leftSkinId, rightSkinId) => leftSkinId - rightSkinId,
+  )
+}
+
+function isAdminTelegramUser(telegramId: unknown) {
+  if (typeof telegramId !== 'number' && typeof telegramId !== 'string') {
+    return false
+  }
+
+  return ADMIN_TELEGRAM_IDS.has(String(telegramId))
+}
+
+async function sendTelegramMessage(chatId: string | number, text: string) {
+  if (!TELEGRAM_BOT_TOKEN) {
+    console.log('Telegram bot token is not configured. Message:', text)
+    return false
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text,
+        }),
+      },
+    )
+
+    if (!response.ok) {
+      console.error('Failed to send Telegram message:', await response.text())
+      return false
+    }
+
+    return true
+  } catch (error) {
+    console.error('Failed to send Telegram message:', error)
+    return false
+  }
+}
+
+async function sendTelegramPhoto(options: {
+  chatId: string | number
+  photoFileId: string
+  caption?: string
+}) {
+  if (!TELEGRAM_BOT_TOKEN) {
+    console.log('Telegram bot token is not configured. Photo caption:', options.caption)
+    return false
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          chat_id: options.chatId,
+          photo: options.photoFileId,
+          caption: options.caption,
+        }),
+      },
+    )
+
+    if (!response.ok) {
+      console.error('Failed to send Telegram photo:', await response.text())
+      return false
+    }
+
+    return true
+  } catch (error) {
+    console.error('Failed to send Telegram photo:', error)
+    return false
+  }
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+async function findPlayerByUnlockTarget(target: string) {
+  const normalizedTarget = target.trim().replace(/^@/, '')
+
+  if (!normalizedTarget) {
+    return null
+  }
+
+  if (/^\d+$/.test(normalizedTarget)) {
+    return prisma.player.findFirst({
+      where: {
+        OR: [
+          { telegramId: normalizedTarget },
+          { id: `telegram:${normalizedTarget}` },
+        ],
+      },
+    })
+  }
+
+  return prisma.player.findFirst({
+    where: {
+      username: {
+        equals: normalizedTarget,
+        mode: 'insensitive',
+      },
+    },
+  })
+}
+
+function isPlayerUnlucky(unluckyUntil: Date | null) {
+  return unluckyUntil !== null && unluckyUntil.getTime() > Date.now()
+}
+
+function getCommandName(text: string) {
+  const firstPart = text.trim().split(/\s+/)[0] ?? ''
+
+  return firstPart.split('@')[0].toLowerCase()
+}
+
+function getCommandParts(text: string) {
+  return text.trim().split(/\s+/).filter(Boolean)
+}
+
+function getPostText(text: string) {
+  return text.replace(/^\/post(?:@\w+)?\s*/i, '').trim()
+}
+
+function getLargestPhotoFileId(
+  photo:
+    | Array<{
+        file_id?: string
+        width?: number
+        height?: number
+        file_size?: number
+      }>
+    | undefined,
+) {
+  if (!photo || photo.length === 0) {
+    return null
+  }
+
+  const largestPhoto = [...photo].sort((leftPhoto, rightPhoto) => {
+    const leftScore =
+      toSafeNumber(leftPhoto.file_size, 0) ||
+      toSafeNumber(leftPhoto.width, 0) * toSafeNumber(leftPhoto.height, 0)
+    const rightScore =
+      toSafeNumber(rightPhoto.file_size, 0) ||
+      toSafeNumber(rightPhoto.width, 0) * toSafeNumber(rightPhoto.height, 0)
+
+    return rightScore - leftScore
+  })[0]
+
+  return largestPhoto?.file_id ?? null
+}
+
+async function broadcastTelegramPost(options: {
+  adminChatId: string | number
+  text: string
+  photoFileId: string | null
+}) {
+  const players = await prisma.player.findMany({
+    where: {
+      telegramId: {
+        not: null,
+      },
+      bannedAt: null,
+    },
+    select: {
+      telegramId: true,
+    },
+  })
+
+  const chatIds = Array.from(
+    new Set(
+      players
+        .map((player) => player.telegramId)
+        .filter((telegramId): telegramId is string => Boolean(telegramId)),
+    ),
+  )
+
+  let sentCount = 0
+  let failedCount = 0
+
+  for (const chatId of chatIds) {
+    const wasSent = options.photoFileId
+      ? await sendTelegramPhoto({
+          chatId,
+          photoFileId: options.photoFileId,
+          caption: options.text,
+        })
+      : await sendTelegramMessage(chatId, options.text)
+
+    if (wasSent) {
+      sentCount += 1
+    } else {
+      failedCount += 1
+    }
+
+    await wait(45)
+  }
+
+  await sendTelegramMessage(
+    options.adminChatId,
+    `✅ Рассылка завершена. Отправлено: ${sentCount}/${chatIds.length}. Ошибок: ${failedCount}.`,
+  )
+
+  return {
+    totalCount: chatIds.length,
+    sentCount,
+    failedCount,
+  }
+}
+
+
+async function resetPlayerProgress(playerId: string) {
+  return prisma.player.update({
+    where: {
+      id: playerId,
+    },
+    data: {
+      balance: 0,
+      clickProfit: 1,
+      hourlyProfit: 0,
+      upgradeLevels: {},
+      level10UnlockStep: 0,
+      level10AnimationCompleted: false,
+      selectedCoinSkin: null,
+      smallBoneLevel: 0,
+      bigBoneLevel: 0,
+      autoFarm1Level: 0,
+      autoFarm2Level: 0,
+    },
+  })
+}
+
+async function resetGameForOfficialRelease() {
+  const gameStartedAt = new Date()
+  const gameEndsAt = new Date(gameStartedAt.getTime() + GAME_DURATION_MS)
+
+  return prisma.$transaction(async (transaction) => {
+    await transaction.finalReward.deleteMany()
+
+    const playersResetResult = await transaction.player.updateMany({
+      data: {
+        balance: 0,
+        clickProfit: 1,
+        hourlyProfit: 0,
+        upgradeLevels: {},
+        level10UnlockStep: 0,
+        level10AnimationCompleted: false,
+        unlockedCoinSkins: [],
+        selectedCoinSkin: null,
+        afkFullFarmUnlocked: false,
+        unluckyUntil: null,
+        bannedAt: null,
+        banReason: null,
+        smallBoneLevel: 0,
+        bigBoneLevel: 0,
+        autoFarm1Level: 0,
+        autoFarm2Level: 0,
+        referrerId: null,
+        referralBonusClaimed: false,
+      },
+    })
+
+    const gameState = await transaction.gameState.upsert({
+      where: {
+        id: GAME_STATE_ID,
+      },
+      update: {
+        gameStartedAt,
+        gameEndsAt,
+        rewardPool: REWARD_POOL,
+        finalizedAt: null,
+      },
+      create: {
+        id: GAME_STATE_ID,
+        gameStartedAt,
+        gameEndsAt,
+        rewardPool: REWARD_POOL,
+      },
+    })
+
+    return {
+      playersReset: playersResetResult.count,
+      gameState,
+    }
+  })
 }
 
 function calculateReferralHourlyBonus(referrals: Array<{ hourlyProfit: number }>) {
@@ -154,6 +625,14 @@ function playerToDto(player: {
   balance: number
   clickProfit: number
   hourlyProfit: number
+  level10UnlockStep: number
+  level10AnimationCompleted: boolean
+  unlockedCoinSkins?: unknown | null
+  selectedCoinSkin?: number | null
+  afkFullFarmUnlocked: boolean
+  unluckyUntil: Date | null
+  bannedAt: Date | null
+  banReason: string | null
   smallBoneLevel: number
   bigBoneLevel: number
   autoFarm1Level: number
@@ -173,6 +652,19 @@ function playerToDto(player: {
     clickProfit: player.clickProfit,
     hourlyProfit: player.hourlyProfit,
     upgradeLevels: getStoredUpgradeLevels(player),
+    level10UnlockStep: normalizeLevel10UnlockStep(player.level10UnlockStep),
+    level10AnimationCompleted: player.level10AnimationCompleted,
+    unlockedCoinSkins: normalizeUnlockedCoinSkins(player.unlockedCoinSkins),
+    selectedCoinSkin: normalizeSelectedCoinSkin(
+      player.selectedCoinSkin,
+      normalizeUnlockedCoinSkins(player.unlockedCoinSkins),
+    ),
+    afkFullFarmUnlocked: player.afkFullFarmUnlocked === true,
+    unluckyUntil: player.unluckyUntil?.toISOString() ?? null,
+    isUnlucky: isPlayerUnlucky(player.unluckyUntil),
+    bannedAt: player.bannedAt?.toISOString() ?? null,
+    banReason: player.banReason,
+    isBanned: player.bannedAt !== null,
     referrerId: player.referrerId,
     referralBonusClaimed: player.referralBonusClaimed,
     createdAt: player.createdAt,
@@ -216,6 +708,24 @@ async function getOrCreateGameState() {
   })
 
   if (existingGameState) {
+    const expectedGameEndsAt = new Date(
+      existingGameState.gameStartedAt.getTime() + GAME_DURATION_MS,
+    )
+
+    if (
+      existingGameState.finalizedAt === null &&
+      existingGameState.gameEndsAt.getTime() < expectedGameEndsAt.getTime()
+    ) {
+      return prisma.gameState.update({
+        where: {
+          id: GAME_STATE_ID,
+        },
+        data: {
+          gameEndsAt: expectedGameEndsAt,
+        },
+      })
+    }
+
     return existingGameState
   }
 
@@ -320,18 +830,37 @@ async function calculateRewards() {
         not: null,
       },
     },
-    orderBy: {
-      balance: 'desc',
-    },
+    orderBy: [
+      {
+        balance: 'desc',
+      },
+      {
+        createdAt: 'asc',
+      },
+    ],
   })
 
   const totalBalance = players.reduce((sum, player) => {
     return sum + player.balance
   }, 0)
 
+  const scoredPlayers = players.map((player, index) => {
+    const rank = index + 1
+
+    return {
+      player,
+      rank,
+      rewardScore: getRewardScore(player.balance, rank),
+    }
+  })
+
+  const totalRewardScore = scoredPlayers.reduce((sum, scoredPlayer) => {
+    return sum + scoredPlayer.rewardScore
+  }, 0)
+
   const rewards: PlayerReward[] =
-    totalBalance <= 0
-      ? players.map((player) => ({
+    totalRewardScore <= 0
+      ? scoredPlayers.map(({ player }) => ({
           playerId: player.id,
           telegramId: player.telegramId,
           username: player.username,
@@ -341,8 +870,8 @@ async function calculateRewards() {
           rewardAmount: 0,
           promoCode: generatePromoCode(player.id, 0),
         }))
-      : players.map((player) => {
-          const share = player.balance / totalBalance
+      : scoredPlayers.map(({ player, rewardScore }) => {
+          const share = rewardScore / totalRewardScore
           const rewardAmount = roundReward(share * gameState.rewardPool)
           const sharePercent = roundReward(share * 100)
 
@@ -397,46 +926,16 @@ app.get('/api/game/state', async (_req, res) => {
 })
 
 app.post('/api/game/finish-for-test', async (_req, res) => {
-  await prisma.gameState.update({
-    where: {
-      id: GAME_STATE_ID,
-    },
-    data: {
-      gameEndsAt: new Date(),
-    },
-  })
-
-  const game = await getGameStateResponse()
-
-  res.json({
-    status: 'ok',
-    game,
+  res.status(404).json({
+    status: 'disabled',
+    message: 'Test endpoint is disabled for the public release.',
   })
 })
 
 app.post('/api/game/reset-for-test', async (_req, res) => {
-  const gameStartedAt = new Date()
-  const gameEndsAt = new Date(gameStartedAt.getTime() + GAME_DURATION_MS)
-
-  await prisma.$transaction([
-    prisma.finalReward.deleteMany(),
-    prisma.gameState.update({
-      where: {
-        id: GAME_STATE_ID,
-      },
-      data: {
-        gameStartedAt,
-        gameEndsAt,
-        finalizedAt: null,
-      },
-    }),
-  ])
-
-  const game = await getGameStateResponse()
-
-  res.json({
-    status: 'ok',
-    game,
+  res.status(404).json({
+    status: 'disabled',
+    message: 'Test endpoint is disabled for the public release.',
   })
 })
 
@@ -513,7 +1012,45 @@ app.post('/api/player/sync', async (req, res) => {
     return
   }
 
+  const requestedBalance = Math.max(0, Math.floor(body.balance))
+  const requestedClickProfit = Math.max(1, Math.floor(body.clickProfit))
+  const requestedHourlyProfit = Math.max(0, Math.floor(body.hourlyProfit))
+
   const playerId = getPlayerId(body)
+  const existingPlayer = await prisma.player.findUnique({
+    where: {
+      id: playerId,
+    },
+  })
+
+  if (existingPlayer?.bannedAt) {
+    const game = await getGameStateResponse()
+
+    res.status(403).json({
+      error: 'player is banned',
+      game,
+      player: playerToDto(existingPlayer),
+    })
+    return
+  }
+
+  const safeBalance = getAntiCheatSafeBalance({
+    existingPlayer,
+    requestedBalance,
+    requestedClickProfit,
+    requestedHourlyProfit,
+  })
+
+  const existingUnlockedCoinSkins = normalizeUnlockedCoinSkins(
+    existingPlayer?.unlockedCoinSkins,
+  )
+  const nextSelectedCoinSkin =
+    body.selectedCoinSkin === undefined
+      ? normalizeSelectedCoinSkin(
+          existingPlayer?.selectedCoinSkin,
+          existingUnlockedCoinSkins,
+        )
+      : normalizeSelectedCoinSkin(body.selectedCoinSkin, existingUnlockedCoinSkins)
 
   const player = await prisma.player.upsert({
     where: {
@@ -525,10 +1062,16 @@ app.post('/api/player/sync', async (req, res) => {
         typeof body.telegramId === 'number' ? String(body.telegramId) : null,
       username: body.username ?? null,
       firstName: body.firstName ?? null,
-      balance: Math.max(0, Math.floor(body.balance)),
-      clickProfit: Math.max(1, Math.floor(body.clickProfit)),
-      hourlyProfit: Math.max(0, Math.floor(body.hourlyProfit)),
+      balance: safeBalance,
+      clickProfit: requestedClickProfit,
+      hourlyProfit: requestedHourlyProfit,
       upgradeLevels,
+      level10UnlockStep: normalizeLevel10UnlockStep(body.level10UnlockStep),
+      level10AnimationCompleted: normalizeLevel10AnimationCompleted(
+        body.level10AnimationCompleted,
+      ),
+      unlockedCoinSkins: [],
+      selectedCoinSkin: null,
       smallBoneLevel: getLegacyUpgradeLevel(upgradeLevels, 'smallBone'),
       bigBoneLevel: getLegacyUpgradeLevel(upgradeLevels, 'bigBone'),
       autoFarm1Level: getLegacyUpgradeLevel(upgradeLevels, 'autoFarm1'),
@@ -539,10 +1082,15 @@ app.post('/api/player/sync', async (req, res) => {
         typeof body.telegramId === 'number' ? String(body.telegramId) : null,
       username: body.username ?? null,
       firstName: body.firstName ?? null,
-      balance: Math.max(0, Math.floor(body.balance)),
-      clickProfit: Math.max(1, Math.floor(body.clickProfit)),
-      hourlyProfit: Math.max(0, Math.floor(body.hourlyProfit)),
+      balance: safeBalance,
+      clickProfit: requestedClickProfit,
+      hourlyProfit: requestedHourlyProfit,
       upgradeLevels,
+      level10UnlockStep: normalizeLevel10UnlockStep(body.level10UnlockStep),
+      level10AnimationCompleted: normalizeLevel10AnimationCompleted(
+        body.level10AnimationCompleted,
+      ),
+      selectedCoinSkin: nextSelectedCoinSkin,
       smallBoneLevel: getLegacyUpgradeLevel(upgradeLevels, 'smallBone'),
       bigBoneLevel: getLegacyUpgradeLevel(upgradeLevels, 'bigBone'),
       autoFarm1Level: getLegacyUpgradeLevel(upgradeLevels, 'autoFarm1'),
@@ -850,6 +1398,242 @@ app.get('/api/rewards/final', async (_req, res) => {
     },
   })
 })
+
+
+
+app.post('/api/telegram/webhook', async (req, res) => {
+  const update = req.body as {
+    message?: {
+      chat?: { id?: string | number }
+      from?: { id?: number; username?: string }
+      text?: string
+      caption?: string
+      photo?: Array<{
+        file_id?: string
+        width?: number
+        height?: number
+        file_size?: number
+      }>
+    }
+  }
+
+  const message = update.message
+  const chatId = message?.chat?.id
+  const text = (message?.text ?? message?.caption ?? '').trim()
+  const commandName = getCommandName(text)
+  const supportedCommands = new Set([
+    '/unlock',
+    '/afkfarm',
+    '/unluck',
+    '/resetacc',
+    '/banuser',
+    '/post',
+    '/officialrelease',
+    '/startrelease',
+  ])
+
+  if (!message || !chatId || !supportedCommands.has(commandName)) {
+    res.json({ status: 'ok', ignored: true })
+    return
+  }
+
+  if (!isAdminTelegramUser(message.from?.id)) {
+    await sendTelegramMessage(chatId, `❌ У тебя нет доступа к ${commandName}.`)
+    res.json({ status: 'ok', allowed: false })
+    return
+  }
+
+  if (commandName === '/officialrelease' || commandName === '/startrelease') {
+    const result = await resetGameForOfficialRelease()
+
+    await sendTelegramMessage(
+      chatId,
+      `✅ Официальный запуск начат. Таймер 14 дней запущен с нуля. Обнулено игроков: ${result.playersReset}. Финиш: ${result.gameState.gameEndsAt.toLocaleString('ru-RU')}.`,
+    )
+
+    res.json({
+      status: 'ok',
+      playersReset: result.playersReset,
+      game: {
+        startedAt: result.gameState.gameStartedAt.toISOString(),
+        endsAt: result.gameState.gameEndsAt.toISOString(),
+      },
+    })
+    return
+  }
+
+  if (commandName === '/post') {
+    const postText = getPostText(text)
+    const photoFileId = getLargestPhotoFileId(message.photo)
+
+    if (!postText && !photoFileId) {
+      await sendTelegramMessage(
+        chatId,
+        'Формат: отправь фото боту с подписью /post текст поста. Можно также отправить /post текст без фото.',
+      )
+      res.json({ status: 'ok', error: 'bad_command_format' })
+      return
+    }
+
+    await sendTelegramMessage(chatId, '📣 Запускаю рассылку поста всем игрокам...')
+
+    void broadcastTelegramPost({
+      adminChatId: chatId,
+      text: postText,
+      photoFileId,
+    }).catch(async (error) => {
+      console.error('Post broadcast failed:', error)
+      await sendTelegramMessage(chatId, '❌ Ошибка во время рассылки поста. Проверь Railway logs.')
+    })
+
+    res.json({ status: 'ok', broadcast: 'started' })
+    return
+  }
+
+
+  const parts = getCommandParts(text)
+  const target = parts[1]
+
+  if (!target) {
+    await sendTelegramMessage(
+      chatId,
+      'Форматы:\n/unlock @username 1\n/afkfarm @username\n/unluck @username\n/resetacc @username\n/banuser @username\n/post текст + фото\n/officialrelease',
+    )
+    res.json({ status: 'ok', error: 'bad_command_format' })
+    return
+  }
+
+  if (commandName === '/unlock') {
+    const skinId = normalizeCoinSkinId(parts[2])
+
+    if (!skinId) {
+      await sendTelegramMessage(
+        chatId,
+        'Формат: /unlock @username 1\nДоступные скины: 1, 2, 3, 4',
+      )
+      res.json({ status: 'ok', error: 'bad_command_format' })
+      return
+    }
+
+    const player = await findPlayerByUnlockTarget(target)
+
+    if (!player) {
+      await sendTelegramMessage(
+        chatId,
+        `❌ Игрок ${target} не найден. Он должен хотя бы раз открыть игру через Telegram.`,
+      )
+      res.json({ status: 'ok', error: 'player_not_found' })
+      return
+    }
+
+    const unlockedCoinSkins = addUnlockedCoinSkin(
+      normalizeUnlockedCoinSkins(player.unlockedCoinSkins),
+      skinId,
+    )
+
+    const updatedPlayer = await prisma.player.update({
+      where: {
+        id: player.id,
+      },
+      data: {
+        unlockedCoinSkins,
+      },
+    })
+
+    await sendTelegramMessage(
+      chatId,
+      `✅ Скин #${skinId} открыт для ${getPlayerDisplayName(updatedPlayer)}.`,
+    )
+
+    res.json({
+      status: 'ok',
+      player: playerToDto(updatedPlayer),
+    })
+    return
+  }
+
+  const player = await findPlayerByUnlockTarget(target)
+
+  if (!player) {
+    await sendTelegramMessage(
+      chatId,
+      `❌ Игрок ${target} не найден. Он должен хотя бы раз открыть игру через Telegram.`,
+    )
+    res.json({ status: 'ok', error: 'player_not_found' })
+    return
+  }
+
+  if (commandName === '/afkfarm') {
+    const updatedPlayer = await prisma.player.update({
+      where: {
+        id: player.id,
+      },
+      data: {
+        afkFullFarmUnlocked: true,
+      },
+    })
+
+    await sendTelegramMessage(
+      chatId,
+      `✅ Full AFK Farm открыт для ${getPlayerDisplayName(updatedPlayer)}. Офлайн-фарм теперь 1x вместо 0.5x.`,
+    )
+
+    res.json({ status: 'ok', player: playerToDto(updatedPlayer) })
+    return
+  }
+
+  if (commandName === '/unluck') {
+    const unluckyUntil = new Date(Date.now() + UNLUCKY_DURATION_MS)
+    const updatedPlayer = await prisma.player.update({
+      where: {
+        id: player.id,
+      },
+      data: {
+        unluckyUntil,
+      },
+    })
+
+    await sendTelegramMessage(
+      chatId,
+      `✅ Неудача наложена на ${getPlayerDisplayName(updatedPlayer)} до ${unluckyUntil.toLocaleString('ru-RU')}.`,
+    )
+
+    res.json({ status: 'ok', player: playerToDto(updatedPlayer) })
+    return
+  }
+
+  if (commandName === '/resetacc') {
+    const updatedPlayer = await resetPlayerProgress(player.id)
+
+    await sendTelegramMessage(
+      chatId,
+      `✅ Прогресс ${getPlayerDisplayName(updatedPlayer)} обнулён. Купленные скины не удалялись.`,
+    )
+
+    res.json({ status: 'ok', player: playerToDto(updatedPlayer) })
+    return
+  }
+
+  if (commandName === '/banuser') {
+    const updatedPlayer = await prisma.player.update({
+      where: {
+        id: player.id,
+      },
+      data: {
+        bannedAt: new Date(),
+        banReason: 'Забанен администратором.',
+      },
+    })
+
+    await sendTelegramMessage(
+      chatId,
+      `✅ ${getPlayerDisplayName(updatedPlayer)} забанен навсегда.`,
+    )
+
+    res.json({ status: 'ok', player: playerToDto(updatedPlayer) })
+  }
+})
+
 
 async function startServer() {
   await getOrCreateGameState()

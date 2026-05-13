@@ -13,6 +13,16 @@ export type PlayerDto = {
   upgradeLevels: UpgradeLevelsDto
   referrerId?: string | null
   referralBonusClaimed?: boolean
+  level10UnlockStep: number
+  level10AnimationCompleted: boolean
+  unlockedCoinSkins: number[]
+  selectedCoinSkin: number | null
+  afkFullFarmUnlocked: boolean
+  unluckyUntil: string | null
+  isUnlucky: boolean
+  bannedAt: string | null
+  banReason: string | null
+  isBanned: boolean
   createdAt: string
   updatedAt: string
 }
@@ -51,6 +61,9 @@ export type PlayerSyncPayload = {
   clickProfit: number
   hourlyProfit: number
   upgradeLevels: UpgradeLevelsDto
+  level10UnlockStep: number
+  level10AnimationCompleted: boolean
+  selectedCoinSkin: number | null
 }
 
 export type GameStateDto = {
@@ -178,6 +191,9 @@ function serializePlayerSyncPayload(payload: PlayerSyncPayload) {
     clickProfit: payload.clickProfit,
     hourlyProfit: payload.hourlyProfit,
     upgradeLevels: payload.upgradeLevels,
+    level10UnlockStep: payload.level10UnlockStep,
+    level10AnimationCompleted: payload.level10AnimationCompleted,
+    selectedCoinSkin: payload.selectedCoinSkin,
   })
 }
 

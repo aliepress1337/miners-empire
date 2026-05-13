@@ -3,19 +3,18 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type PointerEvent,
 } from 'react'
 import './App.css'
 
 import {
   finalizeRewards,
-  finishGameForTest,
   getCurrentPlayer,
   getFinalRewards,
   getGameState,
   getLeaderboard,
   getPlayerReferrals,
-  resetGameForTest,
   syncPlayerProgress,
   syncPlayerProgressBeacon,
   type FinalRewardsDto,
@@ -37,6 +36,10 @@ import {
 import bgImage from './assets/bg.png'
 import coinImage from './assets/coin.png'
 import mainCoinImage from './assets/main-coin.png'
+import coinSkin1 from './assets/skins/1.png'
+import coinSkin2 from './assets/skins/2.png'
+import coinSkin3 from './assets/skins/3.png'
+import coinSkin4 from './assets/skins/4.png'
 
 import dogLevel1 from './assets/dogs_lvl/1.png'
 import dogLevel2 from './assets/dogs_lvl/2.png'
@@ -46,6 +49,9 @@ import dogLevel5 from './assets/dogs_lvl/5.png'
 import dogLevel6 from './assets/dogs_lvl/6.png'
 import dogLevel7 from './assets/dogs_lvl/7.png'
 import dogLevel8 from './assets/dogs_lvl/8.png'
+import dogLevel9 from './assets/dogs_lvl/9.png'
+import dogLevel10 from './assets/dogs_lvl/10.png'
+import glassCrackSound from './assets/sound/glass.mp3'
 
 import clickerIcon from './assets/icons/clicker.png'
 import feedIcon from './assets/icons/feed.png'
@@ -85,9 +91,30 @@ type ShopItem = {
   badge: string
   priceLabel: string
   icon: string
+  commandLabel: string
+  kind: 'afk' | 'unluck' | 'reset' | 'ban'
 }
 
 type UpgradeLevels = Record<UpgradeId, number>
+
+type CoinSkinId = 1 | 2 | 3 | 4
+
+type CoinSkin = {
+  id: CoinSkinId
+  title: string
+  description: string
+  image: string
+}
+
+type Level10UnlockStep = 0 | 1 | 2 | 3
+
+type TelegramHapticImpactStyle = 'light' | 'medium' | 'heavy' | 'rigid' | 'soft'
+
+type TelegramWebAppWithHaptic = {
+  HapticFeedback?: {
+    impactOccurred?: (style: TelegramHapticImpactStyle) => void
+  }
+}
 
 type GameSave = {
   balance: number
@@ -97,19 +124,39 @@ type GameSave = {
   gameStartedAt: number
   gameEndsAt: number
   savedAt: number
+  level10UnlockStep: Level10UnlockStep
+  level10AnimationCompleted: boolean
+  unlockedCoinSkins: CoinSkinId[]
+  selectedCoinSkin: CoinSkinId | null
+  afkFullFarmUnlocked: boolean
+  unluckyUntil: string | null
+  bannedAt: string | null
+  banReason: string | null
 }
 
 const SAVE_KEY = 'tsutsik-game-save'
 
-const GAME_DURATION_DAYS = 7
+const GAME_DURATION_DAYS = 14
 const GAME_DURATION_MS = GAME_DURATION_DAYS * 24 * 60 * 60 * 1000
 
 const OFFLINE_HOURLY_MULTIPLIER = 0.5
+const BOOSTED_OFFLINE_HOURLY_MULTIPLIER = 1
 const ONLINE_HOURLY_MULTIPLIER = 1
-const PRICE_GROWTH = 1.75
-const PROFIT_GROWTH = 1.25
+const UNLUCKY_PROFIT_MULTIPLIER = 0.25
+const PRICE_GROWTH = 1.9
+const PROFIT_GROWTH = 1.15
 const AUTO_SYNC_DELAY_MS = 1500
 const SOCIAL_REFRESH_INTERVAL_MS = 10000
+const LEVEL_10_MIN_COINS = 1000000000000
+const LEVEL_10_CRACK_STEPS = 3
+const LEVEL_10_FINAL_CRACK_DELAY_MS = 520
+const LEVEL_10_VIDEO_URL = new URL('./assets/dogs_lvl/10.MOV', import.meta.url).href
+const COIN_SKIN_SELLER_USERNAME = 'Ivan210'
+const COIN_SKIN_PRICE_LABEL = '0.99$'
+const MIN_TAP_INTERVAL_MS = 22
+const MAX_VALID_TAPS_PER_SECOND = 24
+const AUTOCLICKER_COOLDOWN_MS = 650
+const AUTOCLICKER_WARNING_MS = 1000
 
 const BOT_USERNAME = 'MinersEmpire_bot'
 const REFERRAL_JOIN_BONUS = 5000
@@ -133,493 +180,494 @@ const FEED_SECTIONS: Array<{
   },
 ]
 
+const FEED_UPGRADES_DESCRIPTION = FEED_SECTIONS.map((section) => section.title).join(' · ')
+
 const FEED_UPGRADES: FeedUpgrade[] = [
   {
-    id: 'crumbs',
-    title: 'Crumbs',
-    type: 'click',
-    category: 'food',
-    basePrice: 10,
-    profitIncrease: 1,
-    description: 'Самый дешёвый стартовый корм.',
-    emoji: '🍪',
-    tag: 'Start',
-  },
+      id: 'crumbs',
+      title: 'Crumbs',
+      type: 'click',
+      category: 'food',
+      basePrice: 10,
+      profitIncrease: 1,
+      description: 'Самый дешёвый стартовый корм.',
+      emoji: '🍪',
+      tag: 'Start',
+    },
   {
-    id: 'smallBone',
-    title: 'Small Bone',
-    type: 'click',
-    category: 'food',
-    basePrice: 45,
-    profitIncrease: 2,
-    description: 'Первый нормальный буст для кликов.',
-    emoji: '🦴',
-    tag: 'Basic',
-  },
+      id: 'smallBone',
+      title: 'Small Bone',
+      type: 'click',
+      category: 'food',
+      basePrice: 60,
+      profitIncrease: 2,
+      description: 'Первый нормальный буст для кликов.',
+      emoji: '🦴',
+      tag: 'Basic',
+    },
   {
-    id: 'puppyCookie',
-    title: 'Puppy Cookie',
-    type: 'click',
-    category: 'food',
-    basePrice: 140,
-    profitIncrease: 4,
-    description: 'Дешёвый буст, но уже ощутимее старта.',
-    emoji: '🍪',
-    tag: 'Snack',
-  },
+      id: 'waterBowl',
+      title: 'Water Bowl',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 180,
+      profitIncrease: 18,
+      description: 'Дешёвый старт пассивной прибыли.',
+      emoji: '💧',
+      tag: 'Passive',
+    },
   {
-    id: 'tastyBone',
-    title: 'Tasty Bone',
-    type: 'click',
-    category: 'food',
-    basePrice: 420,
-    profitIncrease: 8,
-    description: 'Плавный переход к средним апгрейдам.',
-    emoji: '🍖',
-    tag: 'Food',
-  },
+      id: 'puppyCookie',
+      title: 'Puppy Cookie',
+      type: 'click',
+      category: 'food',
+      basePrice: 600,
+      profitIncrease: 5,
+      description: 'Дешёвый буст, но уже ощутимее старта.',
+      emoji: '🍪',
+      tag: 'Snack',
+    },
   {
-    id: 'meatSnack',
-    title: 'Meat Snack',
-    type: 'click',
-    category: 'food',
-    basePrice: 1200,
-    profitIncrease: 15,
-    description: 'Больше смысла копить, меньше мелких +3/+5.',
-    emoji: '🍗',
-    tag: 'Meat',
-  },
+      id: 'comfyMat',
+      title: 'Comfy Mat',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 1800,
+      profitIncrease: 80,
+      description: 'Небольшой, но полезный автофарм.',
+      emoji: '🧺',
+      tag: 'Rest',
+    },
   {
-    id: 'dogBowl',
-    title: 'Dog Bowl',
-    type: 'click',
-    category: 'food',
-    basePrice: 3200,
-    profitIncrease: 28,
-    description: 'Первый уверенный апгрейд для активной игры.',
-    emoji: '🥣',
-    tag: 'Meal',
-  },
+      id: 'tastyBone',
+      title: 'Tasty Bone',
+      type: 'click',
+      category: 'food',
+      basePrice: 5500,
+      profitIncrease: 12,
+      description: 'Плавный переход к средним апгрейдам.',
+      emoji: '🍖',
+      tag: 'Food',
+    },
   {
-    id: 'snackBox',
-    title: 'Snack Box',
-    type: 'click',
-    category: 'food',
-    basePrice: 8500,
-    profitIncrease: 50,
-    description: 'Хороший буст после накопления.',
-    emoji: '📦',
-    tag: 'Combo',
-  },
+      id: 'autoFarm1',
+      title: 'Auto Farm I',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 16000,
+      profitIncrease: 350,
+      description: 'Первый серьёзный доход в час.',
+      emoji: '⛏️',
+      tag: 'Farm',
+    },
   {
-    id: 'premiumKibble',
-    title: 'Premium Kibble',
-    type: 'click',
-    category: 'food',
-    basePrice: 20000,
-    profitIncrease: 90,
-    description: 'Середина прогресса для сильного клика.',
-    emoji: '🍲',
-    tag: 'Plus',
-  },
+      id: 'meatSnack',
+      title: 'Meat Snack',
+      type: 'click',
+      category: 'food',
+      basePrice: 45000,
+      profitIncrease: 32,
+      description: 'Больше смысла копить, меньше мелких +3/+5.',
+      emoji: '🍗',
+      tag: 'Meat',
+    },
   {
-    id: 'championMeal',
-    title: 'Champion Meal',
-    type: 'click',
-    category: 'food',
-    basePrice: 45000,
-    profitIncrease: 150,
-    description: 'Первая покупка даёт +150, дальше эффект растёт.',
-    emoji: '🏅',
-    tag: 'Pro',
-  },
+      id: 'puppyBed',
+      title: 'Puppy Bed',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 120000,
+      profitIncrease: 1500,
+      description: 'Пассивный рост для начала игры.',
+      emoji: '🛏️',
+      tag: 'Sleep',
+    },
   {
-    id: 'proteinPlate',
-    title: 'Protein Plate',
-    type: 'click',
-    category: 'food',
-    basePrice: 100000,
-    profitIncrease: 250,
-    description: 'Сильный апгрейд для активного фарма.',
-    emoji: '🥘',
-    tag: 'Strong',
-  },
+      id: 'dogBowl',
+      title: 'Dog Bowl',
+      type: 'click',
+      category: 'food',
+      basePrice: 300000,
+      profitIncrease: 80,
+      description: 'Первый уверенный апгрейд для активной игры.',
+      emoji: '🥣',
+      tag: 'Meal',
+    },
   {
-    id: 'powerSteak',
-    title: 'Power Steak',
-    type: 'click',
-    category: 'food',
-    basePrice: 220000,
-    profitIncrease: 420,
-    description: 'Большой скачок, но цена уже серьёзная.',
-    emoji: '🥩',
-    tag: 'Power',
-  },
+      id: 'toyBasket',
+      title: 'Toy Basket',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 750000,
+      profitIncrease: 6000,
+      description: 'Хороший автофарм после первых кликов.',
+      emoji: '🧸',
+      tag: 'Fun',
+    },
   {
-    id: 'royalBone',
-    title: 'Royal Bone',
-    type: 'click',
-    category: 'food',
-    basePrice: 500000,
-    profitIncrease: 700,
-    description: 'Премиальная еда до late-game.',
-    emoji: '👑',
-    tag: 'Royal',
-  },
+      id: 'snackBox',
+      title: 'Snack Box',
+      type: 'click',
+      category: 'food',
+      basePrice: 1800000,
+      profitIncrease: 180,
+      description: 'Хороший буст после накопления.',
+      emoji: '📦',
+      tag: 'Combo',
+    },
   {
-    id: 'goldenFeast',
-    title: 'Golden Feast',
-    type: 'click',
-    category: 'food',
-    basePrice: 1100000,
-    profitIncrease: 1100,
-    description: 'Крупный апгрейд для миллионных балансов.',
-    emoji: '🍛',
-    tag: 'Gold',
-  },
+      id: 'autoFarm2',
+      title: 'Auto Farm II',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 4200000,
+      profitIncrease: 25000,
+      description: 'Переход к тысячам монет в час.',
+      emoji: '⚙️',
+      tag: 'Auto',
+    },
   {
-    id: 'legendaryFeast',
-    title: 'Legendary Feast',
-    type: 'click',
-    category: 'food',
-    basePrice: 2500000,
-    profitIncrease: 1800,
-    description: 'Сильный кликовый предмет для поздней игры.',
-    emoji: '🔥',
-    tag: 'Legend',
-  },
+      id: 'trainingWhistle',
+      title: 'Training Whistle',
+      type: 'click',
+      category: 'food',
+      basePrice: 9000000,
+      profitIncrease: 420,
+      description: 'Премиальный буст активной игры.',
+      emoji: '📣',
+      tag: 'Boost',
+    },
   {
-    id: 'mythicBowl',
-    title: 'Mythic Bowl',
-    type: 'click',
-    category: 'food',
-    basePrice: 5500000,
-    profitIncrease: 3000,
-    description: 'Очень дорогой, но заметный рост клика.',
-    emoji: '💫',
-    tag: 'Mythic',
-  },
+      id: 'dogHouse',
+      title: 'Dog House',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 18000000,
+      profitIncrease: 100000,
+      description: 'Домик приносит стабильный доход.',
+      emoji: '🏠',
+      tag: 'House',
+    },
   {
-    id: 'feastHall',
-    title: 'Tsutsik Feast Hall',
-    type: 'click',
-    category: 'food',
-    basePrice: 12000000,
-    profitIncrease: 5000,
-    description: 'Финальный кликовый апгрейд в обычной еде.',
-    emoji: '🏛️',
-    tag: 'Hall',
-  },
+      id: 'premiumKibble',
+      title: 'Premium Kibble',
+      type: 'click',
+      category: 'food',
+      basePrice: 35000000,
+      profitIncrease: 950,
+      description: 'Середина прогресса для сильного клика.',
+      emoji: '🍲',
+      tag: 'Plus',
+    },
   {
-    id: 'waterBowl',
-    title: 'Water Bowl',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 160,
-    profitIncrease: 18,
-    description: 'Дешёвый старт пассивной прибыли.',
-    emoji: '💧',
-    tag: 'Passive',
-  },
+      id: 'trainerVisit',
+      title: 'Trainer Visit',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 65000000,
+      profitIncrease: 400000,
+      description: 'Тренер ускоряет прогресс без кликов.',
+      emoji: '🧑‍🏫',
+      tag: 'Coach',
+    },
   {
-    id: 'comfyMat',
-    title: 'Comfy Mat',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 360,
-    profitIncrease: 45,
-    description: 'Небольшой, но полезный автофарм.',
-    emoji: '🧺',
-    tag: 'Rest',
-  },
+      id: 'silverLeash',
+      title: 'Silver Leash',
+      type: 'click',
+      category: 'food',
+      basePrice: 120000000,
+      profitIncrease: 2000,
+      description: 'Редкий предмет для кликового роста.',
+      emoji: '🔗',
+      tag: 'Rare',
+    },
   {
-    id: 'autoFarm1',
-    title: 'Auto Farm I',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 850,
-    profitIncrease: 110,
-    description: 'Первый серьёзный доход в час.',
-    emoji: '⛏️',
-    tag: 'Farm',
-  },
+      id: 'goldenBowl',
+      title: 'Golden Bowl',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 220000000,
+      profitIncrease: 1500000,
+      description: 'Пассивный предмет для средних балансов.',
+      emoji: '🏆',
+      tag: 'Gold',
+    },
   {
-    id: 'puppyBed',
-    title: 'Puppy Bed',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 1900,
-    profitIncrease: 240,
-    description: 'Пассивный рост для начала игры.',
-    emoji: '🛏️',
-    tag: 'Sleep',
-  },
+      id: 'championMeal',
+      title: 'Champion Meal',
+      type: 'click',
+      category: 'food',
+      basePrice: 400000000,
+      profitIncrease: 4500,
+      description: 'Первая покупка даёт +150, дальше эффект растёт.',
+      emoji: '🏅',
+      tag: 'Pro',
+    },
   {
-    id: 'toyBasket',
-    title: 'Toy Basket',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 4200,
-    profitIncrease: 520,
-    description: 'Хороший автофарм после первых кликов.',
-    emoji: '🧸',
-    tag: 'Fun',
-  },
+      id: 'boneGarden',
+      title: 'Bone Garden',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 700000000,
+      profitIncrease: 5000000,
+      description: 'Сад косточек растит доход каждый час.',
+      emoji: '🌱',
+      tag: 'Grow',
+    },
   {
-    id: 'autoFarm2',
-    title: 'Auto Farm II',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 9000,
-    profitIncrease: 1100,
-    description: 'Переход к тысячам монет в час.',
-    emoji: '⚙️',
-    tag: 'Auto',
-  },
+      id: 'proteinPlate',
+      title: 'Protein Plate',
+      type: 'click',
+      category: 'food',
+      basePrice: 1200000000,
+      profitIncrease: 9000,
+      description: 'Сильный апгрейд для активного фарма.',
+      emoji: '🥘',
+      tag: 'Strong',
+    },
   {
-    id: 'dogHouse',
-    title: 'Dog House',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 20000,
-    profitIncrease: 2400,
-    description: 'Домик приносит стабильный доход.',
-    emoji: '🏠',
-    tag: 'House',
-  },
+      id: 'sleepyGuard',
+      title: 'Sleepy Guard',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 2000000000,
+      profitIncrease: 15000000,
+      description: 'Охранник фармит, даже когда отдыхает.',
+      emoji: '🐶',
+      tag: 'Guard',
+    },
   {
-    id: 'trainerVisit',
-    title: 'Trainer Visit',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 45000,
-    profitIncrease: 5000,
-    description: 'Тренер ускоряет прогресс без кликов.',
-    emoji: '🧑‍🏫',
-    tag: 'Coach',
-  },
+      id: 'powerSteak',
+      title: 'Power Steak',
+      type: 'click',
+      category: 'food',
+      basePrice: 3500000000,
+      profitIncrease: 18000,
+      description: 'Большой скачок, но цена уже серьёзная.',
+      emoji: '🥩',
+      tag: 'Power',
+    },
   {
-    id: 'goldenBowl',
-    title: 'Golden Bowl',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 100000,
-    profitIncrease: 10500,
-    description: 'Пассивный предмет для средних балансов.',
-    emoji: '🏆',
-    tag: 'Gold',
-  },
+      id: 'vipKennel',
+      title: 'VIP Kennel',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 6000000000,
+      profitIncrease: 40000000,
+      description: 'VIP пассивный доход для богатых игроков.',
+      emoji: '🏡',
+      tag: 'VIP',
+    },
   {
-    id: 'boneGarden',
-    title: 'Bone Garden',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 230000,
-    profitIncrease: 22000,
-    description: 'Сад косточек растит доход каждый час.',
-    emoji: '🌱',
-    tag: 'Grow',
-  },
+      id: 'royalBone',
+      title: 'Royal Bone',
+      type: 'click',
+      category: 'food',
+      basePrice: 9000000000,
+      profitIncrease: 35000,
+      description: 'Премиальная еда до late-game.',
+      emoji: '👑',
+      tag: 'Royal',
+    },
   {
-    id: 'sleepyGuard',
-    title: 'Sleepy Guard',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 520000,
-    profitIncrease: 47000,
-    description: 'Охранник фармит, даже когда отдыхает.',
-    emoji: '🐶',
-    tag: 'Guard',
-  },
+      id: 'autoKitchen',
+      title: 'Auto Kitchen',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 13000000000,
+      profitIncrease: 100000000,
+      description: 'Кухня автоматически создаёт прибыль.',
+      emoji: '🍳',
+      tag: 'Kitchen',
+    },
   {
-    id: 'autoKitchen',
-    title: 'Auto Kitchen',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 1100000,
-    profitIncrease: 100000,
-    description: 'Кухня автоматически создаёт прибыль.',
-    emoji: '🍳',
-    tag: 'Kitchen',
-  },
+      id: 'goldenCollar',
+      title: 'Golden Collar',
+      type: 'click',
+      category: 'food',
+      basePrice: 18000000000,
+      profitIncrease: 70000,
+      description: 'Эпический клик-буст для сильной игры.',
+      emoji: '📿',
+      tag: 'Epic',
+    },
   {
-    id: 'kennelNetwork',
-    title: 'Kennel Network',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 2500000,
-    profitIncrease: 220000,
-    description: 'Сеть домиков для большого автофарма.',
-    emoji: '🏘️',
-    tag: 'Network',
-  },
+      id: 'guardDogCamp',
+      title: 'Guard Dog Camp',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 25000000000,
+      profitIncrease: 250000000,
+      description: 'Охрана приносит большой доход в час.',
+      emoji: '🛡️',
+      tag: 'Camp',
+    },
   {
-    id: 'foodTruck',
-    title: 'Food Truck',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 5500000,
-    profitIncrease: 480000,
-    description: 'Мобильная кухня приносит монеты в час.',
-    emoji: '🚚',
-    tag: 'Truck',
-  },
+      id: 'goldenFeast',
+      title: 'Golden Feast',
+      type: 'click',
+      category: 'food',
+      basePrice: 34000000000,
+      profitIncrease: 130000,
+      description: 'Крупный апгрейд для миллионных балансов.',
+      emoji: '🍛',
+      tag: 'Gold',
+    },
   {
-    id: 'boneFactory',
-    title: 'Bone Factory',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 12000000,
-    profitIncrease: 1000000,
-    description: 'Фабрика для миллионного пассивного дохода.',
-    emoji: '🏭',
-    tag: 'Factory',
-  },
+      id: 'kennelNetwork',
+      title: 'Kennel Network',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 45000000000,
+      profitIncrease: 550000000,
+      description: 'Сеть домиков для большого автофарма.',
+      emoji: '🏘️',
+      tag: 'Network',
+    },
   {
-    id: 'cityShelter',
-    title: 'City Shelter',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 26000000,
-    profitIncrease: 2200000,
-    description: 'Большой shelter для сильного late-game.',
-    emoji: '🏙️',
-    tag: 'City',
-  },
+      id: 'legendaryFeast',
+      title: 'Legendary Feast',
+      type: 'click',
+      category: 'food',
+      basePrice: 60000000000,
+      profitIncrease: 250000,
+      description: 'Сильный кликовый предмет для поздней игры.',
+      emoji: '🔥',
+      tag: 'Legend',
+    },
   {
-    id: 'trainingWhistle',
-    title: 'Training Whistle',
-    type: 'click',
-    category: 'food',
-    basePrice: 75000,
-    profitIncrease: 180,
-    description: 'Премиальный буст активной игры.',
-    emoji: '📣',
-    tag: 'Boost',
-  },
+      id: 'foodTruck',
+      title: 'Food Truck',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 80000000000,
+      profitIncrease: 1100000000,
+      description: 'Мобильная кухня приносит монеты в час.',
+      emoji: '🚚',
+      tag: 'Truck',
+    },
   {
-    id: 'silverLeash',
-    title: 'Silver Leash',
-    type: 'click',
-    category: 'food',
-    basePrice: 180000,
-    profitIncrease: 380,
-    description: 'Редкий предмет для кликового роста.',
-    emoji: '🔗',
-    tag: 'Rare',
-  },
+      id: 'mythicBowl',
+      title: 'Mythic Bowl',
+      type: 'click',
+      category: 'food',
+      basePrice: 105000000000,
+      profitIncrease: 450000,
+      description: 'Очень дорогой, но заметный рост клика.',
+      emoji: '💫',
+      tag: 'Mythic',
+    },
   {
-    id: 'goldenCollar',
-    title: 'Golden Collar',
-    type: 'click',
-    category: 'food',
-    basePrice: 420000,
-    profitIncrease: 800,
-    description: 'Эпический клик-буст для сильной игры.',
-    emoji: '📿',
-    tag: 'Epic',
-  },
+      id: 'tsutsikFactory',
+      title: 'Tsutsik Factory',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 135000000000,
+      profitIncrease: 2000000000,
+      description: 'Фабрика для быстрого роста баланса.',
+      emoji: '🏭',
+      tag: 'Mega',
+    },
   {
-    id: 'vipKennel',
-    title: 'VIP Kennel',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 850000,
-    profitIncrease: 160000,
-    description: 'VIP пассивный доход для богатых игроков.',
-    emoji: '🏡',
-    tag: 'VIP',
-  },
+      id: 'feastHall',
+      title: 'Tsutsik Feast Hall',
+      type: 'click',
+      category: 'food',
+      basePrice: 170000000000,
+      profitIncrease: 800000,
+      description: 'Финальный кликовый апгрейд в обычной еде.',
+      emoji: '🏛️',
+      tag: 'Hall',
+    },
   {
-    id: 'guardDogCamp',
-    title: 'Guard Dog Camp',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 1800000,
-    profitIncrease: 360000,
-    description: 'Охрана приносит большой доход в час.',
-    emoji: '🛡️',
-    tag: 'Camp',
-  },
+      id: 'boneFactory',
+      title: 'Bone Factory',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 210000000000,
+      profitIncrease: 3500000000,
+      description: 'Фабрика для миллионного пассивного дохода.',
+      emoji: '🏭',
+      tag: 'Factory',
+    },
   {
-    id: 'tsutsikFactory',
-    title: 'Tsutsik Factory',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 4000000,
-    profitIncrease: 800000,
-    description: 'Фабрика для быстрого роста баланса.',
-    emoji: '🏭',
-    tag: 'Mega',
-  },
+      id: 'legendaryTrainer',
+      title: 'Legendary Trainer',
+      type: 'click',
+      category: 'food',
+      basePrice: 250000000000,
+      profitIncrease: 1300000,
+      description: 'Очень сильный click апгрейд.',
+      emoji: '🏋️',
+      tag: 'Legend',
+    },
   {
-    id: 'boneMine',
-    title: 'Bone Mine',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 9000000,
-    profitIncrease: 1700000,
-    description: 'Шахта косточек для late-game фарма.',
-    emoji: '💎',
-    tag: 'Mine',
-  },
+      id: 'boneMine',
+      title: 'Bone Mine',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 300000000000,
+      profitIncrease: 5500000000,
+      description: 'Шахта косточек для late-game фарма.',
+      emoji: '💎',
+      tag: 'Mine',
+    },
   {
-    id: 'royalKitchen',
-    title: 'Royal Kitchen',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 18000000,
-    profitIncrease: 3200000,
-    description: 'Королевская кухня с огромным доходом.',
-    emoji: '🍽️',
-    tag: 'Royal',
-  },
+      id: 'cityShelter',
+      title: 'City Shelter',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 360000000000,
+      profitIncrease: 8000000000,
+      description: 'Большой shelter для сильного late-game.',
+      emoji: '🏙️',
+      tag: 'City',
+    },
   {
-    id: 'legendaryTrainer',
-    title: 'Legendary Trainer',
-    type: 'click',
-    category: 'food',
-    basePrice: 22000000,
-    profitIncrease: 8000,
-    description: 'Очень сильный click апгрейд.',
-    emoji: '🏋️',
-    tag: 'Legend',
-  },
+      id: 'royalKitchen',
+      title: 'Royal Kitchen',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 430000000000,
+      profitIncrease: 11000000000,
+      description: 'Королевская кухня с огромным доходом.',
+      emoji: '🍽️',
+      tag: 'Royal',
+    },
   {
-    id: 'tsutsikBank',
-    title: 'Tsutsik Bank',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 40000000,
-    profitIncrease: 7000000,
-    description: 'Банк для огромного пассивного дохода.',
-    emoji: '🏦',
-    tag: 'Bank',
-  },
+      id: 'tsutsikBank',
+      title: 'Tsutsik Bank',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 500000000000,
+      profitIncrease: 15000000000,
+      description: 'Банк для огромного пассивного дохода.',
+      emoji: '🏦',
+      tag: 'Bank',
+    },
   {
-    id: 'worldDogCup',
-    title: 'World Dog Cup',
-    type: 'click',
-    category: 'food',
-    basePrice: 55000000,
-    profitIncrease: 20000,
-    description: 'Финальный кликовый трофей.',
-    emoji: '🏆',
-    tag: 'World',
-  },
+      id: 'worldDogCup',
+      title: 'World Dog Cup',
+      type: 'click',
+      category: 'food',
+      basePrice: 600000000000,
+      profitIncrease: 2200000,
+      description: 'Финальный кликовый трофей.',
+      emoji: '🏆',
+      tag: 'World',
+    },
   {
-    id: 'championEmpire',
-    title: 'Champion Empire',
-    type: 'hourly',
-    category: 'auto',
-    basePrice: 90000000,
-    profitIncrease: 15000000,
-    description: 'Самый дорогой пассивный апгрейд.',
-    emoji: '🏰',
-    tag: 'Endgame',
-  },
+      id: 'championEmpire',
+      title: 'Champion Empire',
+      type: 'hourly',
+      category: 'auto',
+      basePrice: 750000000000,
+      profitIncrease: 22000000000,
+      description: 'Самый дорогой пассивный апгрейд.',
+      emoji: '🏰',
+      tag: 'Endgame',
+    }
 ]
-
 const DEFAULT_UPGRADE_LEVELS: UpgradeLevels = FEED_UPGRADES.reduce<UpgradeLevels>(
   (levels, upgrade) => {
     levels[upgrade.id] = 0
@@ -630,44 +678,85 @@ const DEFAULT_UPGRADE_LEVELS: UpgradeLevels = FEED_UPGRADES.reduce<UpgradeLevels
 
 const SHOP_ITEMS: ShopItem[] = [
   {
-    title: 'Starter Bones',
-    description: 'Набор для быстрого старта: монеты, кости и небольшой буст прогресса.',
-    badge: 'Soon',
-    priceLabel: 'Basic pack',
-    icon: '🦴',
-  },
-  {
-    title: 'Click Booster',
-    description: 'Временное усиление кликов для активной игры и быстрого роста баланса.',
-    badge: 'Beta 2',
-    priceLabel: '+ click power',
-    icon: '⚡',
-  },
-  {
-    title: 'Auto Farm Pack',
-    description: 'Пакет для пассивной прибыли: будет полезен, когда игрок не в игре.',
-    badge: 'Planned',
-    priceLabel: '+ hourly farm',
+    title: 'Full AFK Farm',
+    description: 'Покупатель получает полный пассивный фарм офлайн вместо 0.5x. Навсегда для аккаунта.',
+    badge: 'AFK Boost',
+    priceLabel: '2.99$',
+    commandLabel: '/afkfarm @username',
     icon: '⏱️',
+    kind: 'afk',
   },
   {
-    title: 'Rare Dog Skin',
-    description: 'Косметический предмет без преимущества в балансе, только стиль профиля.',
-    badge: 'Cosmetic',
-    priceLabel: 'visual item',
-    icon: '👑',
+    title: 'Наложить неудачу',
+    description: 'Выбранный игрок 24 часа получает только 0.25x от кликов и пассивного фарма.',
+    badge: '24 hours',
+    priceLabel: '2.99$',
+    commandLabel: '/unluck @username',
+    icon: '💀',
+    kind: 'unluck',
+  },
+  {
+    title: 'Reset Account',
+    description: 'Обнуляет прогресс выбранного игрока: баланс, апгрейды, фарм и 10 уровень.',
+    badge: 'Reset',
+    priceLabel: '10.99$',
+    commandLabel: '/resetacc @username',
+    icon: '🧨',
+    kind: 'reset',
+  },
+  {
+    title: 'Ban User',
+    description: 'Навсегда блокирует выбранного игрока в приложении. Только через ручное подтверждение.',
+    badge: 'Forever',
+    priceLabel: '19.99$',
+    commandLabel: '/banuser @username',
+    icon: '🔨',
+    kind: 'ban',
   },
 ]
 
+
+
+const COIN_SKINS: CoinSkin[] = [
+  {
+    id: 1,
+    title: 'Gold Flash',
+    description: 'Яркий премиум-скин для монеты.',
+    image: coinSkin1,
+  },
+  {
+    id: 2,
+    title: 'Blue Ice',
+    description: 'Холодный стиль для аккуратного профиля.',
+    image: coinSkin2,
+  },
+  {
+    id: 3,
+    title: 'Purple Neon',
+    description: 'Более заметная монета для активной игры.',
+    image: coinSkin3,
+  },
+  {
+    id: 4,
+    title: 'Royal Doge',
+    description: 'Редкий декоративный скин без бонуса к фарму.',
+    image: coinSkin4,
+  },
+]
+
+const COIN_SKIN_IDS = COIN_SKINS.map((skin) => skin.id)
+
 const LEVELS: LevelConfig[] = [
   { level: 1, name: 'Bronze', minCoins: 0 },
-  { level: 2, name: 'Silver', minCoins: 1000 },
-  { level: 3, name: 'Gold', minCoins: 50000 },
-  { level: 4, name: 'Platinum', minCoins: 300000 },
-  { level: 5, name: 'Diamond', minCoins: 1000000 },
-  { level: 6, name: 'Master', minCoins: 5000000 },
-  { level: 7, name: 'Legend', minCoins: 25000000 },
-  { level: 8, name: 'Tsutsik King', minCoins: 100000000 },
+  { level: 2, name: 'Silver', minCoins: 10000 },
+  { level: 3, name: 'Gold', minCoins: 200000 },
+  { level: 4, name: 'Platinum', minCoins: 1000000 },
+  { level: 5, name: 'Diamond', minCoins: 25000000 },
+  { level: 6, name: 'Master', minCoins: 150000000 },
+  { level: 7, name: 'Legend', minCoins: 1000000000 },
+  { level: 8, name: 'Tsutsik King', minCoins: 25000000000 },
+  { level: 9, name: 'Level 9', minCoins: 150000000000 },
+  { level: 10, name: 'Level 10', minCoins: 1000000000000 },
 ]
 
 const DOG_IMAGES: Record<number, string> = {
@@ -679,6 +768,8 @@ const DOG_IMAGES: Record<number, string> = {
   6: dogLevel6,
   7: dogLevel7,
   8: dogLevel8,
+  9: dogLevel9,
+  10: dogLevel10,
 }
 
 const TABS: Array<{
@@ -702,6 +793,87 @@ function getSafeNumber(value: unknown, fallback = 0) {
 function getSafePositiveNumber(value: unknown, fallback = 0) {
   return Math.max(0, getSafeNumber(value, fallback))
 }
+
+function getSafeOptionalIsoDate(value: unknown) {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const timestamp = Date.parse(value)
+
+  if (!Number.isFinite(timestamp)) {
+    return null
+  }
+
+  return new Date(timestamp).toISOString()
+}
+
+function isTimestampInFuture(value: string | null, now = Date.now()) {
+  if (!value) {
+    return false
+  }
+
+  const timestamp = Date.parse(value)
+
+  return Number.isFinite(timestamp) && timestamp > now
+}
+
+function getSafeLevel10UnlockStep(value: unknown): Level10UnlockStep {
+  const parsedValue = Math.floor(getSafeNumber(value, 0))
+
+  if (parsedValue <= 0) {
+    return 0
+  }
+
+  if (parsedValue >= LEVEL_10_CRACK_STEPS) {
+    return LEVEL_10_CRACK_STEPS as Level10UnlockStep
+  }
+
+  return parsedValue as Level10UnlockStep
+}
+
+function getSafeCoinSkinId(value: unknown): CoinSkinId | null {
+  const parsedValue = Math.floor(getSafeNumber(value, 0))
+
+  return COIN_SKIN_IDS.includes(parsedValue as CoinSkinId)
+    ? (parsedValue as CoinSkinId)
+    : null
+}
+
+function normalizeUnlockedCoinSkins(value: unknown): CoinSkinId[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return Array.from(
+    new Set(
+      value
+        .map((skinId) => getSafeCoinSkinId(skinId))
+        .filter((skinId): skinId is CoinSkinId => skinId !== null),
+    ),
+  ).sort((leftSkinId, rightSkinId) => leftSkinId - rightSkinId)
+}
+
+function isCoinSkinUnlocked(
+  skinId: CoinSkinId,
+  unlockedCoinSkins: CoinSkinId[],
+) {
+  return unlockedCoinSkins.includes(skinId)
+}
+
+function getVisibleSelectedCoinSkin(
+  selectedCoinSkin: CoinSkinId | null,
+  unlockedCoinSkins: CoinSkinId[],
+) {
+  if (!selectedCoinSkin) {
+    return null
+  }
+
+  return isCoinSkinUnlocked(selectedCoinSkin, unlockedCoinSkins)
+    ? selectedCoinSkin
+    : null
+}
+
 
 function formatNumber(value: number) {
   const safeValue = getSafeNumber(value, 0)
@@ -731,6 +903,50 @@ function formatNumber(value: number) {
   const roundedShortValue = Math.floor(shortValue * 10) / 10
 
   return `${Number.isInteger(roundedShortValue) ? roundedShortValue.toFixed(0) : roundedShortValue.toFixed(1)}${unit.suffix}`
+}
+
+function formatEventDuration(milliseconds: number) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000))
+  const days = Math.floor(totalSeconds / 86400)
+  const hours = Math.floor((totalSeconds % 86400) / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const paddedHours = String(hours).padStart(2, '0')
+  const paddedMinutes = String(minutes).padStart(2, '0')
+  const paddedSeconds = String(seconds).padStart(2, '0')
+
+  if (days > 0) {
+    return `${days}д ${paddedHours}ч ${paddedMinutes}м ${paddedSeconds}с`
+  }
+
+  if (hours > 0) {
+    return `${hours}ч ${paddedMinutes}м ${paddedSeconds}с`
+  }
+
+  return `${minutes}м ${paddedSeconds}с`
+}
+
+function formatEventDate(timestamp: number) {
+  if (!Number.isFinite(timestamp)) {
+    return '—'
+  }
+
+  return new Date(timestamp).toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function getParsedTimestamp(value: string | undefined, fallback: number) {
+  if (!value) {
+    return fallback
+  }
+
+  const parsedTimestamp = Date.parse(value)
+
+  return Number.isFinite(parsedTimestamp) ? parsedTimestamp : fallback
 }
 
 function calculateUpgradePrice(basePrice: number, upgradeLevel: number) {
@@ -781,6 +997,14 @@ function createDefaultSave(): GameSave {
     gameStartedAt: now,
     gameEndsAt: now + GAME_DURATION_MS,
     savedAt: now,
+    level10UnlockStep: 0,
+    level10AnimationCompleted: false,
+    unlockedCoinSkins: [],
+    selectedCoinSkin: null,
+    afkFullFarmUnlocked: false,
+    unluckyUntil: null,
+    bannedAt: null,
+    banReason: null,
   }
 }
 
@@ -798,18 +1022,49 @@ function loadSavedGame(): GameSave {
       bigBoneLevel?: number
       autoFarm1Level?: number
       autoFarm2Level?: number
+      level10UnlockStep?: number
+      level10AnimationCompleted?: boolean
+      unlockedCoinSkins?: unknown
+      selectedCoinSkin?: unknown
+      afkFullFarmUnlocked?: unknown
+      unluckyUntil?: unknown
+      bannedAt?: unknown
+      banReason?: unknown
     }
 
     const now = Date.now()
 
     const gameStartedAt = Number(parsedSave.gameStartedAt) || now
-    const gameEndsAt =
-      Number(parsedSave.gameEndsAt) || gameStartedAt + GAME_DURATION_MS
+    const expectedGameEndsAt = gameStartedAt + GAME_DURATION_MS
+    const storedGameEndsAt = Number(parsedSave.gameEndsAt) || expectedGameEndsAt
+    const gameEndsAt = Math.max(storedGameEndsAt, expectedGameEndsAt)
 
     const balance = getSafePositiveNumber(parsedSave.balance, 0)
     const clickProfit = getSafePositiveNumber(parsedSave.clickProfit, 1) || 1
     const hourlyProfit = getSafePositiveNumber(parsedSave.hourlyProfit, 0)
+    const afkFullFarmUnlocked = parsedSave.afkFullFarmUnlocked === true
+    const unluckyUntil = getSafeOptionalIsoDate(parsedSave.unluckyUntil)
+    const bannedAt = getSafeOptionalIsoDate(parsedSave.bannedAt)
+    const banReason = typeof parsedSave.banReason === 'string' ? parsedSave.banReason : null
+    const unluckyMultiplier = isTimestampInFuture(unluckyUntil, now)
+      ? UNLUCKY_PROFIT_MULTIPLIER
+      : 1
+    const offlineMultiplier = afkFullFarmUnlocked
+      ? BOOSTED_OFFLINE_HOURLY_MULTIPLIER
+      : OFFLINE_HOURLY_MULTIPLIER
     const savedAt = getSafeNumber(parsedSave.savedAt, now) || now
+    const level10UnlockStep = getSafeLevel10UnlockStep(
+      parsedSave.level10UnlockStep,
+    )
+    const level10AnimationCompleted =
+      parsedSave.level10AnimationCompleted === true
+    const unlockedCoinSkins = normalizeUnlockedCoinSkins(
+      parsedSave.unlockedCoinSkins,
+    )
+    const selectedCoinSkin = getVisibleSelectedCoinSkin(
+      getSafeCoinSkinId(parsedSave.selectedCoinSkin),
+      unlockedCoinSkins,
+    )
 
     const upgradeLevels =
       parsedSave.upgradeLevels !== undefined
@@ -824,7 +1079,7 @@ function loadSavedGame(): GameSave {
     const offlineEndTime = Math.min(now, gameEndsAt)
     const offlineMilliseconds = Math.max(offlineEndTime - savedAt, 0)
     const offlineHours = offlineMilliseconds / 1000 / 60 / 60
-    const offlineReward = hourlyProfit * OFFLINE_HOURLY_MULTIPLIER * offlineHours
+    const offlineReward = hourlyProfit * offlineMultiplier * unluckyMultiplier * offlineHours
 
     return {
       balance: balance + offlineReward,
@@ -834,6 +1089,14 @@ function loadSavedGame(): GameSave {
       gameStartedAt,
       gameEndsAt,
       savedAt: now,
+      level10UnlockStep,
+      level10AnimationCompleted,
+      unlockedCoinSkins,
+      selectedCoinSkin,
+      afkFullFarmUnlocked,
+      unluckyUntil,
+      bannedAt,
+      banReason,
     }
   } catch {
     return defaultSave
@@ -995,6 +1258,31 @@ function App() {
   const [gameStartedAt] = useState(savedGame.gameStartedAt)
   const [gameEndsAt] = useState(savedGame.gameEndsAt)
   const [currentTime, setCurrentTime] = useState(Date.now())
+  const [level10UnlockStep, setLevel10UnlockStep] = useState<Level10UnlockStep>(
+    savedGame.level10UnlockStep,
+  )
+  const [level10AnimationCompleted, setLevel10AnimationCompleted] = useState(
+    savedGame.level10AnimationCompleted,
+  )
+  const [unlockedCoinSkins, setUnlockedCoinSkins] = useState<CoinSkinId[]>(
+    savedGame.unlockedCoinSkins,
+  )
+  const [selectedCoinSkin, setSelectedCoinSkin] = useState<CoinSkinId | null>(
+    savedGame.selectedCoinSkin,
+  )
+  const [afkFullFarmUnlocked, setAfkFullFarmUnlocked] = useState(
+    savedGame.afkFullFarmUnlocked,
+  )
+  const [unluckyUntil, setUnluckyUntil] = useState<string | null>(
+    savedGame.unluckyUntil,
+  )
+  const [bannedAt, setBannedAt] = useState<string | null>(savedGame.bannedAt)
+  const [banReason, setBanReason] = useState<string | null>(savedGame.banReason)
+  const [isLevel10VideoPlaying, setIsLevel10VideoPlaying] = useState(false)
+  const [level10CrackOrigin, setLevel10CrackOrigin] = useState<{
+    x: number
+    y: number
+  } | null>(null)
   const [referralCopied, setReferralCopied] = useState(false)
 
   const [telegramUser, setTelegramUser] = useState<TelegramUser | null>(null)
@@ -1005,18 +1293,27 @@ function App() {
 
   const [serverGame, setServerGame] = useState<GameStateDto | null>(null)
   const [serverStatusText, setServerStatusText] = useState('Checking backend...')
-  const [adminStatusText, setAdminStatusText] = useState('Ready for local tests')
-  const [adminActionBusy, setAdminActionBusy] = useState(false)
   const [finalRewards, setFinalRewards] = useState<FinalRewardsDto | null>(null)
+  const [finalRewardsLoading, setFinalRewardsLoading] = useState(false)
+  const [promoCodeVisible, setPromoCodeVisible] = useState(false)
   const [backendPlayerLoaded, setBackendPlayerLoaded] = useState(false)
+  const [antiClickerWarning, setAntiClickerWarning] = useState<string | null>(null)
 
   const latestSyncPayloadRef = useRef<PlayerSyncPayload | null>(null)
   const syncInFlightRef = useRef(false)
   const syncVersionRef = useRef(0)
+  const level10VideoRef = useRef<HTMLVideoElement | null>(null)
+  const dogButtonRef = useRef<HTMLButtonElement | null>(null)
+  const glassCrackAudioRef = useRef<HTMLAudioElement | null>(null)
   const lastSuccessfulSyncVersionRef = useRef(0)
   const lastSocialRefreshRef = useRef(0)
   const backendReadyRef = useRef(false)
   const gameSyncAllowedRef = useRef(false)
+  const tapTimestampsRef = useRef<number[]>([])
+  const lastAcceptedTapAtRef = useRef(0)
+  const blockedTapCountRef = useRef(0)
+  const tapCooldownUntilRef = useRef(0)
+  const antiClickerWarningTimeoutRef = useRef<number | null>(null)
 
   const [referrals, setReferrals] = useState<ReferralDto[]>([])
   const [referralsCount, setReferralsCount] = useState(0)
@@ -1047,20 +1344,117 @@ function App() {
     getSafePositiveNumber(serverReferralHourlyBonus, 0),
     calculatedReferralHourlyBonus,
   )
-  const effectiveHourlyProfit = safeHourlyProfit + referralHourlyBonus
+  const isUnluckyActive = isTimestampInFuture(unluckyUntil, currentTime)
+  const unluckyTimeLeftText = isUnluckyActive
+    ? formatEventDuration(Math.max(Date.parse(unluckyUntil ?? '') - currentTime, 0))
+    : ''
+  const activeProfitMultiplier = isUnluckyActive ? UNLUCKY_PROFIT_MULTIPLIER : 1
+  const effectiveClickProfit = Math.max(1, safeClickProfit * activeProfitMultiplier)
+  const baseEffectiveHourlyProfit = safeHourlyProfit + referralHourlyBonus
+  const effectiveHourlyProfit = baseEffectiveHourlyProfit * activeProfitMultiplier
   const maxLevel = LEVELS.length
+  const sortedFeedUpgrades = useMemo(() => {
+    return [...FEED_UPGRADES].sort((leftUpgrade, rightUpgrade) => {
+      const leftPrice = calculateUpgradePrice(
+        leftUpgrade.basePrice,
+        upgradeLevels[leftUpgrade.id] ?? 0,
+      )
+      const rightPrice = calculateUpgradePrice(
+        rightUpgrade.basePrice,
+        upgradeLevels[rightUpgrade.id] ?? 0,
+      )
+
+      if (leftPrice !== rightPrice) {
+        return leftPrice - rightPrice
+      }
+
+      return leftUpgrade.basePrice - rightUpgrade.basePrice
+    })
+  }, [upgradeLevels])
 
   const localGameFinished = currentTime >= gameEndsAt
   const serverGameFinished = serverGame?.status === 'finished'
   const isGameFinished = serverGame ? serverGameFinished : localGameFinished
 
+  const eventStartedAt = getParsedTimestamp(serverGame?.startedAt, gameStartedAt)
+  const eventEndsAt = getParsedTimestamp(serverGame?.endsAt, gameEndsAt)
+  const eventDurationMs = Math.max(eventEndsAt - eventStartedAt, 1)
+  const eventElapsedMs = Math.min(
+    Math.max(currentTime - eventStartedAt, 0),
+    eventDurationMs,
+  )
+  const eventRemainingMs = Math.max(eventEndsAt - currentTime, 0)
+  const eventProgressPercent = Math.min(
+    Math.max((eventElapsedMs / eventDurationMs) * 100, 0),
+    100,
+  )
+  const eventTotalDays = Math.max(1, Math.ceil(eventDurationMs / 86400000))
+  const eventCurrentDay = Math.min(
+    eventTotalDays,
+    Math.floor(eventElapsedMs / 86400000) + 1,
+  )
+  const eventTimeLeftText = isGameFinished
+    ? 'Ивент завершён'
+    : formatEventDuration(eventRemainingMs)
+  const eventElapsedText = formatEventDuration(eventElapsedMs)
+  const eventEndsAtText = formatEventDate(eventEndsAt)
+
   const referralLink = getReferralLink(telegramUser)
   const myReward = findMyReward(finalRewards, telegramUser)
-  const showDevTestPanel = !telegramMode
+  const finalPromoCode = myReward?.promoCode ?? generateLocalPromoCode(displayedBalance)
+  const hiddenFinalPromoCode = '•'.repeat(Math.max(finalPromoCode.length, 12))
+  const finalRewardAmountText = myReward
+    ? `${formatNumber(myReward.rewardAmount)} DOGS`
+    : finalRewardsLoading
+      ? 'считаем...'
+      : 'ожидает backend'
+  const finalRewardShareText = myReward
+    ? `${myReward.sharePercent}%`
+    : finalRewardsLoading
+      ? 'считаем...'
+      : 'ожидает backend'
 
   const ratingText = currentLeaderboardPlayer
     ? `#${currentLeaderboardPlayer.rank}`
     : '...'
+
+  function applyPlayerServerState(player: {
+    unlockedCoinSkins?: number[]
+    selectedCoinSkin?: number | null
+    afkFullFarmUnlocked?: boolean
+    unluckyUntil?: string | null
+    bannedAt?: string | null
+    banReason?: string | null
+  }) {
+    const nextUnlockedCoinSkins = normalizeUnlockedCoinSkins(
+      player.unlockedCoinSkins,
+    )
+    const nextSelectedCoinSkin = getVisibleSelectedCoinSkin(
+      getSafeCoinSkinId(player.selectedCoinSkin),
+      nextUnlockedCoinSkins,
+    )
+
+    setUnlockedCoinSkins(nextUnlockedCoinSkins)
+    setSelectedCoinSkin(nextSelectedCoinSkin)
+    setAfkFullFarmUnlocked(player.afkFullFarmUnlocked === true)
+    setUnluckyUntil(getSafeOptionalIsoDate(player.unluckyUntil))
+    setBannedAt(getSafeOptionalIsoDate(player.bannedAt))
+    setBanReason(typeof player.banReason === 'string' ? player.banReason : null)
+  }
+
+  async function refreshCurrentPlayerCosmetics() {
+    try {
+      const currentPlayerResponse = await getCurrentPlayer(telegramUser)
+
+      if (currentPlayerResponse.player) {
+        applyPlayerServerState(currentPlayerResponse.player)
+        setServerStatusText('Coin skins refreshed')
+      }
+    } catch (error) {
+      console.error('Failed to refresh coin skins:', error)
+      setServerStatusText('Coin skins refresh failed')
+    }
+  }
 
   async function loadReferrals(currentTelegramUser: TelegramUser | null) {
     try {
@@ -1152,6 +1546,10 @@ function App() {
         setServerStatusText(`Backend game: ${response.game.status}, progress saved`)
       }
 
+      if (response.player) {
+        applyPlayerServerState(response.player)
+      }
+
       const now = Date.now()
 
       if (now - lastSocialRefreshRef.current >= SOCIAL_REFRESH_INTERVAL_MS) {
@@ -1162,6 +1560,19 @@ function App() {
       }
     } catch (error) {
       console.error('Auto sync failed:', error)
+
+      if (error instanceof Error && error.message.includes('banned')) {
+        try {
+          const currentPlayerResponse = await getCurrentPlayer(payload.telegramUser)
+
+          if (currentPlayerResponse.player) {
+            applyPlayerServerState(currentPlayerResponse.player)
+          }
+        } catch (refreshError) {
+          console.error('Failed to refresh banned player state:', refreshError)
+        }
+      }
+
       setServerStatusText('Backend sync failed')
     } finally {
       syncInFlightRef.current = false
@@ -1216,6 +1627,19 @@ function App() {
             )
           }
 
+          setLevel10UnlockStep(
+            getSafeLevel10UnlockStep(loadedPlayer.level10UnlockStep),
+          )
+          setLevel10AnimationCompleted(
+            loadedPlayer.level10AnimationCompleted === true,
+          )
+
+          if (loadedPlayer.level10AnimationCompleted === true) {
+            setIsLevel10VideoPlaying(false)
+          }
+
+          applyPlayerServerState(loadedPlayer)
+
           setUpgradeLevels((currentLevels) =>
             normalizeUpgradeLevels({
               ...currentLevels,
@@ -1228,17 +1652,30 @@ function App() {
         await loadLeaderboard(currentTelegramUser)
 
         if (currentPlayerResponse.game.status === 'finished') {
+          setFinalRewardsLoading(true)
+
           try {
             const finalRewardsResponse = await getFinalRewards()
 
             setFinalRewards(finalRewardsResponse.finalRewards)
             setServerStatusText('Backend game: finished, rewards loaded')
           } catch {
-            setFinalRewards(null)
-            setServerStatusText('Backend game: finished, rewards not finalized')
+            try {
+              const finalizedRewardsResponse = await finalizeRewards()
+
+              setServerGame(finalizedRewardsResponse.game)
+              setFinalRewards(finalizedRewardsResponse.finalRewards)
+              setServerStatusText('Backend game: finished, rewards finalized')
+            } catch {
+              setFinalRewards(null)
+              setServerStatusText('Backend game: finished, rewards not finalized')
+            }
+          } finally {
+            setFinalRewardsLoading(false)
           }
         } else {
           setFinalRewards(null)
+          setFinalRewardsLoading(false)
         }
       } catch {
         setServerGame(null)
@@ -1258,6 +1695,14 @@ function App() {
 
     return () => {
       window.clearInterval(timerId)
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (antiClickerWarningTimeoutRef.current !== null) {
+        window.clearTimeout(antiClickerWarningTimeoutRef.current)
+      }
     }
   }, [])
 
@@ -1334,10 +1779,33 @@ function App() {
       gameStartedAt,
       gameEndsAt,
       savedAt: Date.now(),
+      level10UnlockStep,
+      level10AnimationCompleted,
+      unlockedCoinSkins,
+      selectedCoinSkin,
+      afkFullFarmUnlocked,
+      unluckyUntil,
+      bannedAt,
+      banReason,
     }
 
     localStorage.setItem(SAVE_KEY, JSON.stringify(save))
-  }, [balance, clickProfit, hourlyProfit, upgradeLevels, gameStartedAt, gameEndsAt])
+  }, [
+    balance,
+    clickProfit,
+    hourlyProfit,
+    upgradeLevels,
+    gameStartedAt,
+    gameEndsAt,
+    level10UnlockStep,
+    level10AnimationCompleted,
+    unlockedCoinSkins,
+    selectedCoinSkin,
+    afkFullFarmUnlocked,
+    unluckyUntil,
+    bannedAt,
+    banReason,
+  ])
 
   useEffect(() => {
     if (effectiveHourlyProfit <= 0 || isGameFinished) {
@@ -1364,6 +1832,9 @@ function App() {
       clickProfit: safeClickProfit,
       hourlyProfit: safeHourlyProfit,
       upgradeLevels,
+      level10UnlockStep,
+      level10AnimationCompleted,
+      selectedCoinSkin: getVisibleSelectedCoinSkin(selectedCoinSkin, unlockedCoinSkins),
     }
 
     syncVersionRef.current += 1
@@ -1374,6 +1845,10 @@ function App() {
     safeClickProfit,
     safeHourlyProfit,
     upgradeLevels,
+    level10UnlockStep,
+    level10AnimationCompleted,
+    selectedCoinSkin,
+    unlockedCoinSkins,
   ])
 
   useEffect(() => {
@@ -1383,6 +1858,72 @@ function App() {
   useEffect(() => {
     gameSyncAllowedRef.current = !isGameFinished && serverGame?.status === 'active'
   }, [isGameFinished, serverGame?.status])
+
+  useEffect(() => {
+    if (!backendPlayerLoaded || !isGameFinished || finalRewards || finalRewardsLoading) {
+      return
+    }
+
+    let cancelled = false
+
+    async function loadFinalRewardsAfterEvent() {
+      setFinalRewardsLoading(true)
+
+      try {
+        const finalRewardsResponse = await getFinalRewards()
+
+        if (cancelled) {
+          return
+        }
+
+        setServerGame(finalRewardsResponse.game)
+        setFinalRewards(finalRewardsResponse.finalRewards)
+        setServerStatusText('Backend game: finished, rewards loaded')
+      } catch {
+        if (!serverGameFinished) {
+          if (!cancelled) {
+            setServerStatusText('Backend game: finished locally, waiting for server')
+          }
+
+          return
+        }
+
+        try {
+          const finalizedRewardsResponse = await finalizeRewards()
+
+          if (cancelled) {
+            return
+          }
+
+          setServerGame(finalizedRewardsResponse.game)
+          setFinalRewards(finalizedRewardsResponse.finalRewards)
+          setServerStatusText('Backend game: finished, rewards finalized')
+        } catch (error) {
+          if (!cancelled) {
+            const message = error instanceof Error ? error.message : 'unknown error'
+
+            setServerStatusText(`Final rewards loading failed: ${message}`)
+          }
+        }
+      } finally {
+        if (!cancelled) {
+          setFinalRewardsLoading(false)
+        }
+      }
+    }
+
+    void loadFinalRewardsAfterEvent()
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    backendPlayerLoaded,
+    finalRewards,
+    finalRewardsLoading,
+    isGameFinished,
+    serverGameFinished,
+  ])
 
   useEffect(() => {
     if (!backendPlayerLoaded) {
@@ -1444,7 +1985,20 @@ function App() {
     )
   }, [currentLevel])
 
-  const currentDogImage = DOG_IMAGES[currentLevel.level]
+  const showLevel10Unlock =
+    displayedBalance >= LEVEL_10_MIN_COINS && !level10AnimationCompleted
+  const currentDogImage = showLevel10Unlock
+    ? dogLevel9
+    : DOG_IMAGES[currentLevel.level]
+  const activeCoinSkinId = getVisibleSelectedCoinSkin(
+    selectedCoinSkin,
+    unlockedCoinSkins,
+  )
+  const activeCoinSkin = COIN_SKINS.find((skin) => skin.id === activeCoinSkinId)
+  const activeCoinImage = showLevel10Unlock
+    ? currentDogImage
+    : activeCoinSkin?.image ?? currentDogImage
+  const showLevel10Crack = showLevel10Unlock && level10UnlockStep > 0
 
   const progressPercent = useMemo(() => {
     if (!nextLevel) {
@@ -1457,12 +2011,249 @@ function App() {
     return Math.min((coinsOnCurrentLevel / coinsNeededForNextLevel) * 100, 100)
   }, [displayedBalance, currentLevel, nextLevel])
 
-  function handleDogClick() {
-    if (isGameFinished) {
+
+  useEffect(() => {
+    const audio = new Audio(glassCrackSound)
+    audio.preload = 'auto'
+    audio.volume = 1
+    glassCrackAudioRef.current = audio
+
+    return () => {
+      audio.pause()
+      glassCrackAudioRef.current = null
+    }
+  }, [])
+
+  function updateLevel10CrackOriginFromButton(button?: HTMLButtonElement | null) {
+    const targetButton = button ?? dogButtonRef.current
+
+    if (!targetButton) {
       return
     }
 
-    setBalance((currentBalance) => currentBalance + safeClickProfit)
+    const rect = targetButton.getBoundingClientRect()
+
+    setLevel10CrackOrigin({
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    })
+  }
+
+  function playGlassCrackSound() {
+    const audio = glassCrackAudioRef.current
+
+    if (!audio) {
+      return
+    }
+
+    audio.pause()
+    audio.currentTime = 0
+    audio.volume = 1
+
+    const playPromise = audio.play()
+
+    if (playPromise) {
+      playPromise.catch((error) => {
+        console.error('Glass crack sound failed:', error)
+      })
+    }
+  }
+
+  function triggerLevel10HapticFeedback(step: Level10UnlockStep) {
+    const webApp = window.Telegram?.WebApp as TelegramWebAppWithHaptic | undefined
+    const haptic = webApp?.HapticFeedback
+
+    if (haptic?.impactOccurred) {
+      try {
+        if (step === 1) {
+          haptic.impactOccurred('light')
+        } else if (step === 2) {
+          haptic.impactOccurred('medium')
+        } else {
+          haptic.impactOccurred('heavy')
+        }
+
+        return
+      } catch (error) {
+        console.error('Telegram haptic feedback failed:', error)
+      }
+    }
+
+    const navigatorWithVibration = navigator as Navigator & {
+      vibrate?: (pattern: number | number[]) => boolean
+    }
+
+    if (!navigatorWithVibration.vibrate) {
+      return
+    }
+
+    if (step === 1) {
+      navigatorWithVibration.vibrate(45)
+    } else if (step === 2) {
+      navigatorWithVibration.vibrate([70, 30, 90])
+    } else {
+      navigatorWithVibration.vibrate([110, 40, 160, 40, 110])
+    }
+  }
+
+  function syncLevel10UnlockState(
+    nextLevel10UnlockStep: Level10UnlockStep,
+    nextLevel10AnimationCompleted: boolean,
+    nextBalance?: number,
+  ) {
+    const currentPayload = latestSyncPayloadRef.current
+
+    if (!currentPayload) {
+      return
+    }
+
+    latestSyncPayloadRef.current = {
+      ...currentPayload,
+      balance: nextBalance ?? currentPayload.balance,
+      level10UnlockStep: nextLevel10UnlockStep,
+      level10AnimationCompleted: nextLevel10AnimationCompleted,
+      selectedCoinSkin: getVisibleSelectedCoinSkin(selectedCoinSkin, unlockedCoinSkins),
+    }
+    syncVersionRef.current += 1
+
+    void syncLatestProgress(true)
+  }
+
+  function startLevel10VideoAfterCrack() {
+    window.setTimeout(() => {
+      setIsLevel10VideoPlaying(true)
+    }, LEVEL_10_FINAL_CRACK_DELAY_MS)
+  }
+
+  function advanceLevel10UnlockIfNeeded(nextBalance: number) {
+    if (level10AnimationCompleted || nextBalance < LEVEL_10_MIN_COINS) {
+      return
+    }
+
+    setLevel10UnlockStep((currentStep) => {
+      if (currentStep >= LEVEL_10_CRACK_STEPS) {
+        startLevel10VideoAfterCrack()
+        return currentStep
+      }
+
+      const nextStep = Math.min(
+        currentStep + 1,
+        LEVEL_10_CRACK_STEPS,
+      ) as Level10UnlockStep
+
+      playGlassCrackSound()
+      triggerLevel10HapticFeedback(nextStep)
+      syncLevel10UnlockState(nextStep, false, nextBalance)
+
+      if (nextStep >= LEVEL_10_CRACK_STEPS) {
+        startLevel10VideoAfterCrack()
+      }
+
+      return nextStep
+    })
+  }
+
+  function completeLevel10Unlock() {
+    setIsLevel10VideoPlaying(false)
+    setLevel10UnlockStep(LEVEL_10_CRACK_STEPS as Level10UnlockStep)
+    setLevel10AnimationCompleted(true)
+    syncLevel10UnlockState(LEVEL_10_CRACK_STEPS as Level10UnlockStep, true)
+  }
+
+  useEffect(() => {
+    if (!isLevel10VideoPlaying) {
+      return
+    }
+
+    const video = level10VideoRef.current
+
+    if (!video) {
+      return
+    }
+
+    video.muted = false
+    video.volume = 1
+
+    const playPromise = video.play()
+
+    if (playPromise) {
+      playPromise.catch((error) => {
+        console.error('Level 10 video play with sound failed:', error)
+      })
+    }
+  }, [isLevel10VideoPlaying])
+
+  function showAntiClickerWarning(message: string) {
+    setAntiClickerWarning(message)
+
+    if (antiClickerWarningTimeoutRef.current !== null) {
+      window.clearTimeout(antiClickerWarningTimeoutRef.current)
+    }
+
+    antiClickerWarningTimeoutRef.current = window.setTimeout(() => {
+      setAntiClickerWarning(null)
+      antiClickerWarningTimeoutRef.current = null
+    }, AUTOCLICKER_WARNING_MS)
+  }
+
+  function canAcceptDogTap() {
+    const now = Date.now()
+
+    if (now < tapCooldownUntilRef.current) {
+      showAntiClickerWarning('Пауза: слишком много тапов подряд.')
+      return false
+    }
+
+    if (now - lastAcceptedTapAtRef.current < MIN_TAP_INTERVAL_MS) {
+      blockedTapCountRef.current += 1
+
+      if (blockedTapCountRef.current >= 4) {
+        tapCooldownUntilRef.current = now + AUTOCLICKER_COOLDOWN_MS
+        blockedTapCountRef.current = 0
+      }
+
+      showAntiClickerWarning('Некоторые слишком быстрые тапы не засчитаны.')
+      return false
+    }
+
+    const recentTaps = tapTimestampsRef.current.filter(
+      (tapTime) => now - tapTime < 1000,
+    )
+
+    if (recentTaps.length >= MAX_VALID_TAPS_PER_SECOND) {
+      blockedTapCountRef.current += 1
+
+      if (blockedTapCountRef.current >= 3) {
+        tapCooldownUntilRef.current = now + AUTOCLICKER_COOLDOWN_MS
+        blockedTapCountRef.current = 0
+      }
+
+      tapTimestampsRef.current = recentTaps
+      showAntiClickerWarning('Очень быстрый автокликер ограничен 🙂')
+      return false
+    }
+
+    recentTaps.push(now)
+    tapTimestampsRef.current = recentTaps
+    lastAcceptedTapAtRef.current = now
+    blockedTapCountRef.current = 0
+
+    return true
+  }
+
+  function handleDogClick() {
+    if (isGameFinished || isLevel10VideoPlaying) {
+      return
+    }
+
+    if (!canAcceptDogTap()) {
+      return
+    }
+
+    const nextBalance = displayedBalance + effectiveClickProfit
+
+    setBalance((currentBalance) => currentBalance + effectiveClickProfit)
+    advanceLevel10UnlockIfNeeded(nextBalance)
   }
 
   function handleDogPointerDown(event: PointerEvent<HTMLButtonElement>) {
@@ -1471,7 +2262,84 @@ function App() {
     }
 
     event.preventDefault()
+    updateLevel10CrackOriginFromButton(event.currentTarget)
     handleDogClick()
+  }
+
+
+  function openCoinSkinPurchaseChat(skin: CoinSkin) {
+    const telegramUrl = `https://t.me/${COIN_SKIN_SELLER_USERNAME}`
+
+    try {
+      const telegramWebAppWithLinks = window.Telegram?.WebApp as
+        | ({ openTelegramLink?: (url: string) => void })
+        | undefined
+
+      if (telegramWebAppWithLinks?.openTelegramLink) {
+        telegramWebAppWithLinks.openTelegramLink(telegramUrl)
+      } else {
+        window.location.href = telegramUrl
+        return
+      }
+    } catch {
+      window.location.href = telegramUrl
+      return
+    }
+
+    setServerStatusText(
+      `Напиши @${COIN_SKIN_SELLER_USERNAME}: skin ${skin.id}`,
+    )
+  }
+
+  function openPaidShopItemChat(item: ShopItem) {
+    const telegramUrl = `https://t.me/${COIN_SKIN_SELLER_USERNAME}`
+
+    try {
+      const telegramWebAppWithLinks = window.Telegram?.WebApp as
+        | { openTelegramLink?: (url: string) => void }
+        | undefined
+
+      if (telegramWebAppWithLinks?.openTelegramLink) {
+        telegramWebAppWithLinks.openTelegramLink(telegramUrl)
+      } else {
+        window.location.href = telegramUrl
+      }
+    } catch {
+      window.location.href = telegramUrl
+    }
+
+    setServerStatusText(
+      `Напиши @${COIN_SKIN_SELLER_USERNAME}: ${item.commandLabel}`,
+    )
+  }
+
+  function handleCoinSkinAction(skin: CoinSkin) {
+    const skinUnlocked = isCoinSkinUnlocked(skin.id, unlockedCoinSkins)
+
+    if (!skinUnlocked) {
+      openCoinSkinPurchaseChat(skin)
+      return
+    }
+
+    const nextSelectedCoinSkin = selectedCoinSkin === skin.id ? null : skin.id
+
+    setSelectedCoinSkin(nextSelectedCoinSkin)
+    setServerStatusText(
+      nextSelectedCoinSkin
+        ? `Coin skin ${skin.id} selected`
+        : 'Default coin selected',
+    )
+
+    const currentPayload = latestSyncPayloadRef.current
+
+    if (currentPayload) {
+      latestSyncPayloadRef.current = {
+        ...currentPayload,
+        selectedCoinSkin: nextSelectedCoinSkin,
+      }
+      syncVersionRef.current += 1
+      void syncLatestProgress(true)
+    }
   }
 
   function buyUpgrade(upgrade: FeedUpgrade) {
@@ -1513,6 +2381,9 @@ function App() {
       clickProfit: nextClickProfit,
       hourlyProfit: nextHourlyProfit,
       upgradeLevels: nextUpgradeLevels,
+      level10UnlockStep,
+      level10AnimationCompleted,
+      selectedCoinSkin: getVisibleSelectedCoinSkin(selectedCoinSkin, unlockedCoinSkins),
     }
 
     setBalance(nextBalance)
@@ -1539,104 +2410,29 @@ function App() {
       await loadLeaderboard(telegramUser)
 
       if (response.game.status === 'finished') {
+        setFinalRewardsLoading(true)
+
         try {
           const finalRewardsResponse = await getFinalRewards()
 
           setFinalRewards(finalRewardsResponse.finalRewards)
           setServerStatusText('Backend game: finished, rewards loaded')
         } catch {
-          setFinalRewards(null)
-          setServerStatusText('Backend game: finished, rewards not finalized')
+          const finalizedRewardsResponse = await finalizeRewards()
+
+          setServerGame(finalizedRewardsResponse.game)
+          setFinalRewards(finalizedRewardsResponse.finalRewards)
+          setServerStatusText('Backend game: finished, rewards finalized')
+        } finally {
+          setFinalRewardsLoading(false)
         }
       } else {
         setFinalRewards(null)
+        setFinalRewardsLoading(false)
       }
     } catch {
       setServerGame(null)
       setServerStatusText('Backend unavailable, local beta mode')
-    }
-  }
-
-  async function finishBackendGameForTest() {
-    setAdminActionBusy(true)
-    setAdminStatusText('Saving current progress...')
-
-    try {
-      if (serverGame?.status === 'active') {
-        await syncPlayerProgress({
-          telegramUser,
-          startParam: telegramStartParam,
-          balance: displayedBalance,
-          clickProfit: safeClickProfit,
-          hourlyProfit: safeHourlyProfit,
-          upgradeLevels,
-        })
-      }
-
-      setAdminStatusText('Finishing backend timer...')
-
-      const response = await finishGameForTest()
-
-      setServerGame(response.game)
-      setFinalRewards(null)
-      setServerStatusText(`Backend game: ${response.game.status}`)
-      setAdminStatusText('Timer finished. Now press Finalize rewards.')
-
-      await loadLeaderboard(telegramUser)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'unknown error'
-
-      setAdminStatusText(`Finish failed: ${message}`)
-    } finally {
-      setAdminActionBusy(false)
-    }
-  }
-
-  async function finalizeBackendRewardsForTest() {
-    setAdminActionBusy(true)
-    setAdminStatusText('Finalizing rewards...')
-
-    try {
-      const response = await finalizeRewards()
-
-      setServerGame(response.game)
-      setFinalRewards(response.finalRewards)
-      setServerStatusText('Backend game: finished, rewards loaded')
-      setAdminStatusText(
-        response.alreadyFinalized
-          ? 'Rewards were already finalized.'
-          : 'Rewards finalized successfully.',
-      )
-
-      await loadLeaderboard(telegramUser)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'unknown error'
-
-      setAdminStatusText(`Finalize failed: ${message}`)
-    } finally {
-      setAdminActionBusy(false)
-    }
-  }
-
-  async function resetBackendGameForTest() {
-    setAdminActionBusy(true)
-    setAdminStatusText('Resetting test timer...')
-
-    try {
-      const response = await resetGameForTest()
-
-      setServerGame(response.game)
-      setFinalRewards(null)
-      setServerStatusText('Backend game: active')
-      setAdminStatusText('Test timer reset. Balances were not changed.')
-
-      await loadLeaderboard(telegramUser)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'unknown error'
-
-      setAdminStatusText(`Reset failed: ${message}`)
-    } finally {
-      setAdminActionBusy(false)
     }
   }
 
@@ -1653,65 +2449,21 @@ function App() {
     }
   }
 
-  const adminTestPanel = showDevTestPanel ? (
-    <div className="admin-test-card">
-      <strong>Local admin test</strong>
-      <span>Тестовая панель видна только в browser beta mode.</span>
-
-      <div className="admin-test-status">
-        <span>Backend:</span>
-        <b>{serverStatusText}</b>
+  if (bannedAt) {
+    return (
+      <div className="app" style={{ backgroundImage: `url(${bgImage})` }}>
+        <main className="game-screen banned-screen">
+          <section className="banned-card">
+            <div className="banned-icon">🔨</div>
+            <span className="shop-card-tag">Account blocked</span>
+            <h1>Аккаунт заблокирован</h1>
+            <p>Этот профиль больше не может участвовать в игре.</p>
+            {banReason && <small>{banReason}</small>}
+          </section>
+        </main>
       </div>
-
-      <div className="admin-test-status">
-        <span>Admin:</span>
-        <b>{adminStatusText}</b>
-      </div>
-
-      {finalRewards && (
-        <div className="admin-test-status">
-          <span>Final rewards:</span>
-          <b>
-            {finalRewards.playersCount} players / {finalRewards.rewardPool} points
-          </b>
-        </div>
-      )}
-
-      <div className="admin-test-actions">
-        <button
-          type="button"
-          disabled={adminActionBusy || serverGame?.status !== 'active'}
-          onClick={finishBackendGameForTest}
-        >
-          Finish 7 days
-        </button>
-
-        <button
-          type="button"
-          disabled={adminActionBusy || serverGame?.status !== 'finished'}
-          onClick={finalizeBackendRewardsForTest}
-        >
-          Finalize rewards
-        </button>
-
-        <button
-          type="button"
-          disabled={adminActionBusy}
-          onClick={refreshBackendState}
-        >
-          Refresh
-        </button>
-
-        <button
-          type="button"
-          disabled={adminActionBusy}
-          onClick={resetBackendGameForTest}
-        >
-          Reset test
-        </button>
-      </div>
-    </div>
-  ) : null
+    )
+  }
 
   return (
     <div className="app" style={{ backgroundImage: `url(${bgImage})` }}>
@@ -1720,7 +2472,7 @@ function App() {
           <section className="top-stats">
             <div className="stat-card">
               <span>Прибыль</span>
-              <span>за клик +{formatNumber(safeClickProfit)}</span>
+              <span>за клик +{formatNumber(effectiveClickProfit)}</span>
             </div>
 
             <div className="stat-card">
@@ -1743,61 +2495,80 @@ function App() {
           </section>
         )}
 
-        {isGameFinished && (
-          <section className="final-screen">
-            <h1>Фарм завершён!</h1>
-            <p>Финальный баланс зафиксирован.</p>
-
-            <div className="final-row">
-              <span>Твой баланс:</span>
-              <strong>{formatNumber(myReward?.finalBalance ?? displayedBalance)}</strong>
+        {!isGameFinished && activeTab === 'clicker' && isUnluckyActive && (
+          <section className="unlucky-status-card">
+            <div>
+              <span>Эффект неудачи</span>
+              <strong>Клики и фарм работают только на 0.25x</strong>
             </div>
-
-            <div className="final-row">
-              <span>Reward pool:</span>
-              <strong>{finalRewards?.rewardPool ?? 20} virtual points</strong>
-            </div>
-
-            <div className="final-row">
-              <span>Твоя доля:</span>
-              <strong>
-                {myReward ? `${myReward.sharePercent}%` : 'ожидает backend'}
-              </strong>
-            </div>
-
-            <div className="final-row">
-              <span>Твоя награда:</span>
-              <strong>
-                {myReward
-                  ? `${myReward.rewardAmount} virtual points`
-                  : 'ожидает backend'}
-              </strong>
-            </div>
-
-            <div className="final-row">
-              <span>Промокод:</span>
-              <strong>
-                {myReward?.promoCode ?? generateLocalPromoCode(displayedBalance)}
-              </strong>
-            </div>
-
-            <p className="final-note">
-              {serverGameFinished
-                ? serverStatusText
-                : 'Локальная beta-версия. Backend ещё не завершил событие.'}
-            </p>
-
-            <button
-              className="final-refresh-button"
-              type="button"
-              onClick={refreshBackendState}
-            >
-              Обновить статус
-            </button>
-
-            {adminTestPanel}
+            <small>Осталось: {unluckyTimeLeftText}</small>
           </section>
         )}
+
+        {isGameFinished && (
+          <section className="final-screen">
+            <div className="final-card">
+              <div className="final-badge">Event finished</div>
+
+              <h1>Фарм завершён!</h1>
+              <p>Финальный баланс зафиксирован. Награда считается из пула 20 DOGS с учётом баланса и места в рейтинге.</p>
+
+              <div className="final-reward-highlight">
+                <span>Ты получил</span>
+                <strong>{finalRewardAmountText}</strong>
+                <small>из пула {finalRewards?.rewardPool ?? 20} DOGS</small>
+              </div>
+
+              <div className="final-stats-grid">
+                <div className="final-stat-tile">
+                  <span>Твой баланс</span>
+                  <strong>{formatNumber(myReward?.finalBalance ?? displayedBalance)}</strong>
+                </div>
+
+                <div className="final-stat-tile">
+                  <span>Твоя доля награды</span>
+                  <strong>{finalRewardShareText}</strong>
+                </div>
+              </div>
+
+              <div className="final-promo-card">
+                <div>
+                  <span>Промокод</span>
+                  <strong className={promoCodeVisible ? 'promo-visible' : 'promo-hidden'}>
+                    {promoCodeVisible ? finalPromoCode : hiddenFinalPromoCode}
+                  </strong>
+                </div>
+
+                <button
+                  className="promo-eye-button"
+                  type="button"
+                  aria-label={promoCodeVisible ? 'Скрыть промокод' : 'Показать промокод'}
+                  onClick={() => setPromoCodeVisible((isVisible) => !isVisible)}
+                >
+                  {promoCodeVisible ? '🙈' : '👁️'}
+                </button>
+              </div>
+
+              <p className="final-note">
+                {finalRewardsLoading
+                  ? 'Загружаем финальную награду с backend...'
+                  : serverGameFinished
+                    ? serverStatusText
+                    : 'Локальная beta-версия. Backend ещё не завершил событие.'}
+              </p>
+
+              <button
+                className="final-refresh-button"
+                type="button"
+                onClick={refreshBackendState}
+                disabled={finalRewardsLoading}
+              >
+                {finalRewardsLoading ? 'Загружается...' : 'Обновить статус'}
+              </button>
+            </div>
+          </section>
+        )}
+
 
         {!isGameFinished && activeTab === 'clicker' && (
           <section className="clicker-screen">
@@ -1822,20 +2593,78 @@ function App() {
               </div>
             </section>
 
+            {showLevel10Crack && (
+              <div className="level10-unlock-hint">
+                {level10UnlockStep < LEVEL_10_CRACK_STEPS
+                  ? 'Включи звук — экран трескается'
+                  : 'Включи звук — открывается 10 уровень...'}
+              </div>
+            )}
+
+            {antiClickerWarning && (
+              <div className="anti-clicker-warning">
+                {antiClickerWarning}
+              </div>
+            )}
+
             <section className="dog-button-wrapper">
               <button
-                className="dog-button"
+                ref={dogButtonRef}
+                className={`dog-button ${
+                  showLevel10Crack
+                    ? `level10-cracking level10-crack-step-${level10UnlockStep}`
+                    : ''
+                }`}
                 type="button"
                 onPointerDown={handleDogPointerDown}
-                disabled={isGameFinished}
+                disabled={isGameFinished || isLevel10VideoPlaying}
               >
                 <img className="main-coin" src={mainCoinImage} alt="main coin" />
                 <img
                   className="dog-image"
-                  src={currentDogImage}
+                  src={activeCoinImage}
                   alt={`dog level ${currentLevel.level}`}
                 />
+
               </button>
+
+              {showLevel10Crack && (
+                <div
+                  className={`level10-crack-overlay level10-crack-step-${level10UnlockStep}`}
+                  style={
+                    level10CrackOrigin
+                      ? ({
+                          '--level10-crack-x': `${level10CrackOrigin.x}px`,
+                          '--level10-crack-y': `${level10CrackOrigin.y}px`,
+                        } as CSSProperties)
+                      : undefined
+                  }
+                  aria-hidden="true"
+                >
+                  <span className="level10-screen-dim" />
+                  <span className="level10-glass-crack core-main" />
+                  <span className="level10-glass-crack core-left" />
+                  <span className="level10-glass-crack core-right" />
+                  <span className="level10-glass-crack core-top" />
+                  <span className="level10-glass-crack core-bottom" />
+                  <span className="level10-glass-crack mid-left" />
+                  <span className="level10-glass-crack mid-right" />
+                  <span className="level10-glass-crack mid-top" />
+                  <span className="level10-glass-crack mid-bottom" />
+                  <span className="level10-glass-crack full-left" />
+                  <span className="level10-glass-crack full-right" />
+                  <span className="level10-glass-crack full-top-left" />
+                  <span className="level10-glass-crack full-top-right" />
+                  <span className="level10-glass-crack full-bottom-left" />
+                  <span className="level10-glass-crack full-bottom-right" />
+                  <span className="level10-glass-crack shard shard-1" />
+                  <span className="level10-glass-crack shard shard-2" />
+                  <span className="level10-glass-crack shard shard-3" />
+                  <span className="level10-glass-crack shard shard-4" />
+                  <span className="level10-glass-crack shard shard-5" />
+                  <span className="level10-glass-flash" />
+                </div>
+              )}
             </section>
           </section>
         )}
@@ -1862,7 +2691,7 @@ function App() {
                   <div className="feed-wallet-icon">⚡</div>
                   <div className="feed-wallet-copy">
                     <span className="feed-wallet-title">За клик</span>
-                    <strong>+{formatNumber(safeClickProfit)}</strong>
+                    <strong>+{formatNumber(effectiveClickProfit)}</strong>
                     <small>за одно нажатие</small>
                   </div>
                 </div>
@@ -1878,65 +2707,59 @@ function App() {
               </div>
             </div>
 
-            {FEED_SECTIONS.map((section) => {
-              const sectionUpgrades = FEED_UPGRADES.filter(
-                (upgrade) => upgrade.category === section.category,
-              )
-
-              return (
-                <div className="feed-section" key={section.category}>
-                  <div className="feed-section-title">
-                    <div>
-                      <strong>{section.title}</strong>
-                      <span>{section.description}</span>
-                    </div>
-                    <b>{sectionUpgrades.length}</b>
-                  </div>
-
-                  <div className="upgrade-list">
-                    {sectionUpgrades.map((upgrade) => {
-                      const upgradeLevel = upgradeLevels[upgrade.id] ?? 0
-                      const upgradePrice = calculateUpgradePrice(
-                        upgrade.basePrice,
-                        upgradeLevel,
-                      )
-                      const upgradeProfitLabel = getUpgradeProfitLabel(
-                        upgrade,
-                        upgradeLevel,
-                      )
-                      const canBuyUpgrade =
-                        displayedBalance >= upgradePrice && !isGameFinished
-
-                      return (
-                        <div className="upgrade-card" key={upgrade.id}>
-                          <div className="upgrade-icon">{upgrade.emoji}</div>
-
-                          <div className="upgrade-info">
-                            <div className="upgrade-title-row">
-                              <strong>{upgrade.title}</strong>
-                            </div>
-
-                            <div className="upgrade-meta-row">
-                              <span>Lvl {upgradeLevel}</span>
-                              <span>Покупка: {upgradeProfitLabel}</span>
-                            </div>
-                          </div>
-
-                          <button
-                            type="button"
-                            disabled={!canBuyUpgrade}
-                            onClick={() => buyUpgrade(upgrade)}
-                          >
-                            <span>Купить</span>
-                            <b>{formatNumber(upgradePrice)}</b>
-                          </button>
-                        </div>
-                      )
-                    })}
-                  </div>
+            <div className="feed-section">
+              <div className="feed-section-title">
+                <div>
+                  <strong>Апгрейды по цене</strong>
+                  <span>{FEED_UPGRADES_DESCRIPTION}. Предметы теперь идут от дешёвых к дорогим.</span>
                 </div>
-              )
-            })}
+                <b>{sortedFeedUpgrades.length}</b>
+              </div>
+
+              <div className="upgrade-list">
+                {sortedFeedUpgrades.map((upgrade) => {
+                  const upgradeLevel = upgradeLevels[upgrade.id] ?? 0
+                  const upgradePrice = calculateUpgradePrice(
+                    upgrade.basePrice,
+                    upgradeLevel,
+                  )
+                  const upgradeProfitLabel = getUpgradeProfitLabel(
+                    upgrade,
+                    upgradeLevel,
+                  )
+                  const canBuyUpgrade =
+                    displayedBalance >= upgradePrice && !isGameFinished
+
+                  return (
+                    <div className="upgrade-card" key={upgrade.id}>
+                      <div className="upgrade-icon">{upgrade.emoji}</div>
+
+                      <div className="upgrade-info">
+                        <div className="upgrade-title-row">
+                          <strong>{upgrade.title}</strong>
+                        </div>
+
+                        <div className="upgrade-meta-row">
+                          <span>
+                            Lvl {upgradeLevel} · {upgrade.type === 'click' ? 'Клик' : 'В час'}
+                          </span>
+                          <span>Покупка: {upgradeProfitLabel}</span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={!canBuyUpgrade}
+                        onClick={() => buyUpgrade(upgrade)}
+                      >
+                        <span>Купить</span>
+                        <b>{formatNumber(upgradePrice)}</b>
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
           </section>
         )}
 
@@ -2058,7 +2881,7 @@ function App() {
             <div className="ranking-hero-card">
               <span className="ranking-eyebrow">Leaderboard</span>
               <h1>Ranking</h1>
-              <p>Топ игроков по балансу за текущий 7-дневный фарм.</p>
+              <p>Топ игроков по балансу за текущий 14-дневный фарм.</p>
             </div>
 
             <div className="ranking-summary-grid">
@@ -2114,11 +2937,51 @@ function App() {
               <div className="shop-hero-copy">
                 <span className="shop-eyebrow">Tsutsik Store</span>
                 <h1>Shop</h1>
-                <p>Будущий магазин бустов, наборов и косметики. Сейчас это красивый preview без реальных оплат.</p>
+                <p>Скины монетки и ручные premium-действия. Нажатие на цену открывает чат с @Ivan210.</p>
               </div>
 
               <div className="shop-hero-coin">
-                <img src={mainCoinImage} alt="coin" />
+                <img src={activeCoinSkin?.image ?? mainCoinImage} alt="coin" />
+              </div>
+            </div>
+
+            <div className="shop-event-card">
+              <div className="shop-event-header">
+                <div>
+                  <span className="shop-card-tag">14-day event</span>
+                  <strong>До конца фарма</strong>
+                </div>
+                <div className="shop-event-day-pill">
+                  День {eventCurrentDay}/{eventTotalDays}
+                </div>
+              </div>
+
+              <div className="shop-event-timer-row">
+                <div>
+                  <span>Осталось</span>
+                  <strong>{eventTimeLeftText}</strong>
+                </div>
+                <div>
+                  <span>Финиш</span>
+                  <strong>{eventEndsAtText}</strong>
+                </div>
+              </div>
+
+              <div className="shop-event-progress-top">
+                <span>Прогресс ивента</span>
+                <strong>{eventProgressPercent.toFixed(1)}%</strong>
+              </div>
+
+              <div
+                className="shop-event-progress-bar"
+                aria-label="Event progress"
+              >
+                <div style={{ width: `${eventProgressPercent}%` }} />
+              </div>
+
+              <div className="shop-event-progress-bottom">
+                <span>Прошло: {eventElapsedText}</span>
+                <span>{GAME_DURATION_DAYS} дней всего</span>
               </div>
             </div>
 
@@ -2129,7 +2992,7 @@ function App() {
               </div>
               <div>
                 <span>Клик</span>
-                <strong>+{formatNumber(safeClickProfit)}</strong>
+                <strong>+{formatNumber(effectiveClickProfit)}</strong>
               </div>
               <div>
                 <span>В час</span>
@@ -2137,16 +3000,53 @@ function App() {
               </div>
             </div>
 
-            <div className="shop-feature-card">
-              <div className="shop-feature-icon">🎁</div>
-              <div>
-                <span className="shop-card-tag">Featured</span>
-                <strong>Weekly Reward Chest</strong>
-                <p>Еженедельный сундук с бонусами появится после полной настройки экономики.</p>
+            <div className="coin-skins-card">
+              <div className="coin-skins-header">
+                <div>
+                  <span className="shop-card-tag">Coin skins</span>
+                  <strong>Скины монетки</strong>
+                  <p>Цена каждого скина — {COIN_SKIN_PRICE_LABEL}. После оплаты @Ivan210 откроет скин вручную.</p>
+                </div>
+                <button type="button" onClick={refreshCurrentPlayerCosmetics}>
+                  Обновить
+                </button>
               </div>
-              <button type="button" disabled>
-                Скоро
-              </button>
+
+              <div className="coin-skins-grid">
+                {COIN_SKINS.map((skin) => {
+                  const skinUnlocked = isCoinSkinUnlocked(skin.id, unlockedCoinSkins)
+                  const skinSelected = selectedCoinSkin === skin.id && skinUnlocked
+
+                  return (
+                    <article
+                      className={`coin-skin-card ${skinUnlocked ? 'unlocked' : 'locked'} ${skinSelected ? 'selected' : ''}`}
+                      key={skin.id}
+                    >
+                      <div className="coin-skin-preview">
+                        <img src={skin.image} alt={skin.title} />
+                      </div>
+
+                      <div className="coin-skin-copy">
+                        <span>Skin #{skin.id}</span>
+                        <strong>{skin.title}</strong>
+                        <p>{skin.description}</p>
+                      </div>
+
+                      <button
+                        type="button"
+                        className={skinSelected ? 'selected' : ''}
+                        onClick={() => handleCoinSkinAction(skin)}
+                      >
+                        {!skinUnlocked
+                          ? COIN_SKIN_PRICE_LABEL
+                          : skinSelected
+                            ? 'Снять'
+                            : 'Выбрать'}
+                      </button>
+                    </article>
+                  )
+                })}
+              </div>
             </div>
 
             <div className="shop-grid">
@@ -2161,9 +3061,13 @@ function App() {
                   <p>{item.description}</p>
 
                   <div className="shop-item-footer">
-                    <span>{item.priceLabel}</span>
-                    <button type="button" disabled>
-                      Locked
+                    <span>{item.commandLabel}</span>
+                    <button
+                      type="button"
+                      disabled={item.kind === 'afk' && afkFullFarmUnlocked}
+                      onClick={() => openPaidShopItemChat(item)}
+                    >
+                      {item.kind === 'afk' && afkFullFarmUnlocked ? 'Активно' : item.priceLabel}
                     </button>
                   </div>
                 </article>
@@ -2172,13 +3076,32 @@ function App() {
 
             <div className="shop-note-card">
               <strong>Безопасно для beta</strong>
-              <span>Кнопки магазина пока заблокированы, поэтому игроки не смогут случайно купить или сломать экономику.</span>
+              <span>Все платные действия выдаются вручную через @Ivan210. Команды доступны только администратору бота.</span>
             </div>
-
-            {adminTestPanel}
           </section>
         )}
       </main>
+
+
+      {isLevel10VideoPlaying && (
+        <div className="level10-video-overlay">
+          <video
+            ref={level10VideoRef}
+            className="level10-video"
+            src={LEVEL_10_VIDEO_URL}
+            autoPlay
+            playsInline
+            preload="auto"
+            onCanPlay={(event) => {
+              event.currentTarget.muted = false
+              event.currentTarget.volume = 1
+              void event.currentTarget.play()
+            }}
+            onEnded={completeLevel10Unlock}
+            onError={completeLevel10Unlock}
+          />
+        </div>
+      )}
 
       <nav className="bottom-nav">
         {TABS.map((tab) => (

@@ -22,14 +22,22 @@ model Player {
   telegramId      String?  @unique
   username        String?
   firstName       String?
-  balance         Int      @default(0)
-  clickProfit     Int      @default(1)
-  hourlyProfit    Int      @default(0)
+  balance         Float    @default(0)
+  clickProfit     Float    @default(1)
+  hourlyProfit    Float    @default(0)
   smallBoneLevel  Int      @default(0)
   bigBoneLevel    Int      @default(0)
   autoFarm1Level  Int      @default(0)
   autoFarm2Level  Int      @default(0)
   upgradeLevels   Json?
+  level10UnlockStep Int @default(0)
+  level10AnimationCompleted Boolean @default(false)
+  unlockedCoinSkins Json?
+  selectedCoinSkin Int?
+  afkFullFarmUnlocked Boolean @default(false)
+  unluckyUntil DateTime?
+  bannedAt DateTime?
+  banReason String?
 
   referrerId      String?
   referralBonusClaimed Boolean @default(false)
@@ -49,7 +57,7 @@ model FinalReward {
   telegramId    String?
   username      String?
   firstName     String?
-  finalBalance  Int
+  finalBalance  Float
   sharePercent  Float
   rewardAmount  Float
   promoCode     String
