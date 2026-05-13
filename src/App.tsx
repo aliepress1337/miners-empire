@@ -1682,15 +1682,16 @@ function App() {
 
       const miniAppMode = isOpenedInTelegram()
       const miniAppUser = getTelegramUser()
-      const storedWebUser = miniAppMode ? null : loadStoredWebLoginUser()
+      const storedWebUser = loadStoredWebLoginUser()
       const currentTelegramUser = miniAppUser ?? storedWebUser
       const currentStartParam = getTelegramStartParam()
+      const hasTrustedTelegramAccount = Boolean(currentTelegramUser?.id)
 
       setTelegramUser(currentTelegramUser)
-      setTelegramMode(miniAppMode)
+      setTelegramMode(Boolean(miniAppMode && miniAppUser))
       setTelegramStartParam(currentStartParam)
 
-      if (!miniAppMode && !currentTelegramUser) {
+      if (!hasTrustedTelegramAccount) {
         setWebLoginRequired(true)
         setBackendPlayerLoaded(false)
         setServerStatusText('Waiting for web login')
