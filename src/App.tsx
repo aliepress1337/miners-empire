@@ -1172,49 +1172,6 @@ function findMyReward(
   )
 }
 
-function isLocalDevelopmentHost() {
-  if (typeof window === 'undefined') {
-    return false
-  }
-
-  return (
-    window.location.hostname === 'localhost' ||
-    window.location.hostname === '127.0.0.1' ||
-    window.location.hostname === '0.0.0.0'
-  )
-}
-
-function isPhoneLikeDevice() {
-  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
-    return true
-  }
-
-  const userAgent = navigator.userAgent.toLowerCase()
-  const isMobileUserAgent =
-    /android|iphone|ipod|windows phone|iemobile|opera mini|mobile/.test(
-      userAgent,
-    )
-  const isIpadOs =
-    /macintosh/.test(userAgent) && Number(navigator.maxTouchPoints ?? 0) > 1
-  const hasTouch = Number(navigator.maxTouchPoints ?? 0) > 0
-  const hasCoarsePointer = window.matchMedia?.('(pointer: coarse)').matches ?? false
-  const shortestScreenSide = Math.min(
-    window.screen?.width ?? window.innerWidth,
-    window.screen?.height ?? window.innerHeight,
-  )
-
-  return (
-    isMobileUserAgent ||
-    isIpadOs ||
-    (hasTouch && hasCoarsePointer && shortestScreenSide <= 820)
-  )
-}
-
-function shouldBlockDesktopPlay() {
-  return !isLocalDevelopmentHost() && !isPhoneLikeDevice()
-}
-
-
 function normalizeWebLoginTelegramUser(value: unknown): TelegramUser | null {
   if (!value || typeof value !== 'object') {
     return null
@@ -1293,41 +1250,7 @@ function savePlayerKey(telegramUser: TelegramUser | null) {
   localStorage.setItem(SAVE_PLAYER_KEY, playerKey)
 }
 
-function DesktopBlockedScreen() {
-  return (
-    <div
-      className="app desktop-blocked-app"
-      style={{ backgroundImage: `url(${bgImage})` }}
-    >
-      <main className="desktop-blocked-screen">
-        <div className="desktop-blocked-card">
-          <img
-            className="desktop-blocked-coin"
-            src={coinImage}
-            alt="Tsutsik coin"
-          />
-
-          <h1>Играть можно только с телефона</h1>
-
-          <p>
-            Чтобы всё было честно, Tsutsik Game недоступна с компьютера или
-            ноутбука. Открой игру в Telegram-приложении на телефоне.
-          </p>
-
-          <div className="desktop-blocked-note">
-            📱 Телефон → Telegram → Miners Empire Bot → Open App
-          </div>
-        </div>
-      </main>
-    </div>
-  )
-}
-
 function App() {
-  if (shouldBlockDesktopPlay()) {
-    return <DesktopBlockedScreen />
-  }
-
   const savedGame = useMemo(() => loadSavedGame(), [])
 
   const [balance, setBalance] = useState(savedGame.balance)
