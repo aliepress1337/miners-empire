@@ -60,6 +60,7 @@ type PlayerSyncRequest = {
   level10UnlockStep?: number
   level10AnimationCompleted?: boolean
   selectedCoinSkin?: number | null
+  knownPlayerUpdatedAt?: string | null
 }
 
 type PlayerReward = {
@@ -1096,6 +1097,27 @@ app.post('/api/player/sync', async (req, res) => {
       game,
       player: playerToDto(existingPlayer),
       progressReset: true,
+    })
+    return
+  }
+
+  const knownPlayerUpdatedAt = typeof body.knownPlayerUpdatedAt === 'string'
+    ? new Date(body.knownPlayerUpdatedAt)
+    : null
+  const hasKnownPlayerUpdatedAt = Boolean(
+    knownPlayerUpdatedAt && !Number.isNaN(knownPlayerUpdatedAt.getTime()),
+  )
+
+  if (
+    existingPlayer &&
+    hasKnownPlayerUpdatedAt &&
+    existingPlayer.updatedAt.getTime() > knownPlayerUpdatedAt!.getTime() + 500
+  ) {
+    res.json({
+      status: 'ok',
+      game,
+      player: playerToDto(existingPlayer),
+      syncConflict: true,
     })
     return
   }

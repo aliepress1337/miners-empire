@@ -66,6 +66,7 @@ export type PlayerSyncPayload = {
   level10UnlockStep: number
   level10AnimationCompleted: boolean
   selectedCoinSkin: number | null
+  knownPlayerUpdatedAt: string | null
 }
 
 export type GameStateDto = {
@@ -241,6 +242,7 @@ function serializePlayerSyncPayload(payload: PlayerSyncPayload) {
     level10UnlockStep: payload.level10UnlockStep,
     level10AnimationCompleted: payload.level10AnimationCompleted,
     selectedCoinSkin: payload.selectedCoinSkin,
+    knownPlayerUpdatedAt: payload.knownPlayerUpdatedAt,
   })
 }
 
@@ -258,6 +260,7 @@ export async function syncPlayerProgress(payload: PlayerSyncPayload) {
     game: GameStateDto
     player: PlayerDto
     progressReset?: boolean
+    syncConflict?: boolean
   }>(response)
 }
 

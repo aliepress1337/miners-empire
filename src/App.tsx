@@ -1396,6 +1396,7 @@ function App() {
   const lastSocialRefreshRef = useRef(0)
   const backendReadyRef = useRef(false)
   const gameSyncAllowedRef = useRef(false)
+  const serverPlayerUpdatedAtRef = useRef<string | null>(null)
 
   const [referrals, setReferrals] = useState<ReferralDto[]>([])
   const [referralsCount, setReferralsCount] = useState(0)
@@ -1500,6 +1501,12 @@ function App() {
     ? `#${currentLeaderboardPlayer.rank}`
     : '...'
 
+  function rememberPlayerServerUpdatedAt(player: { updatedAt?: string | null }) {
+    if (typeof player.updatedAt === 'string' && player.updatedAt) {
+      serverPlayerUpdatedAtRef.current = player.updatedAt
+    }
+  }
+
   function applyPlayerServerState(player: {
     unlockedCoinSkins?: number[]
     selectedCoinSkin?: number | null
@@ -1507,6 +1514,7 @@ function App() {
     unluckyUntil?: string | null
     bannedAt?: string | null
     banReason?: string | null
+    updatedAt?: string | null
   }) {
     const nextUnlockedCoinSkins = normalizeUnlockedCoinSkins(
       player.unlockedCoinSkins,
@@ -1522,6 +1530,7 @@ function App() {
     setUnluckyUntil(getSafeOptionalIsoDate(player.unluckyUntil))
     setBannedAt(getSafeOptionalIsoDate(player.bannedAt))
     setBanReason(typeof player.banReason === 'string' ? player.banReason : null)
+    rememberPlayerServerUpdatedAt(player)
   }
 
   function applyFullPlayerServerState(player: {
@@ -1537,6 +1546,7 @@ function App() {
     unluckyUntil?: string | null
     bannedAt?: string | null
     banReason?: string | null
+    updatedAt?: string | null
   }) {
     setBalance(getSafePositiveNumber(player.balance, 0))
     setClickProfit(getSafePositiveNumber(player.clickProfit, 1) || 1)
@@ -1660,6 +1670,9 @@ function App() {
         if (response.progressReset) {
           applyFullPlayerServerState(response.player)
           setServerStatusText('Official release reset applied')
+        } else if (response.syncConflict) {
+          applyFullPlayerServerState(response.player)
+          setServerStatusText('Server progress refreshed from another device')
         } else {
           applyPlayerServerState(response.player)
         }
@@ -1960,6 +1973,7 @@ function App() {
       level10UnlockStep,
       level10AnimationCompleted,
       selectedCoinSkin: getVisibleSelectedCoinSkin(selectedCoinSkin, unlockedCoinSkins),
+      knownPlayerUpdatedAt: serverPlayerUpdatedAtRef.current,
     }
 
     syncVersionRef.current += 1
@@ -2447,6 +2461,7 @@ function App() {
       level10UnlockStep,
       level10AnimationCompleted,
       selectedCoinSkin: getVisibleSelectedCoinSkin(selectedCoinSkin, unlockedCoinSkins),
+      knownPlayerUpdatedAt: serverPlayerUpdatedAtRef.current,
     }
 
     setBalance(nextBalance)
