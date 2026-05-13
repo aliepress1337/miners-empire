@@ -2057,8 +2057,6 @@ function App() {
       return
     }
 
-    void syncLatestProgress(true)
-
     const intervalId = window.setInterval(() => {
       void syncLatestProgress(false)
     }, AUTO_SYNC_DELAY_MS)
