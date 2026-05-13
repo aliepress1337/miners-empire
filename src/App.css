@@ -233,6 +233,7 @@ button {
   position: fixed;
   left: 50%;
   bottom: 0;
+  z-index: 1000;
   transform: translateX(-50%);
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -298,7 +299,7 @@ button {
 
 /* Shared tab panels */
 .tab-screen {
-  margin: 12px 20px 0;
+  margin: 12px 20px calc(112px + env(safe-area-inset-bottom, 0px));
   padding: 20px;
   min-height: 360px;
   border: 3px solid #765034;
@@ -930,7 +931,7 @@ button {
 
 /* Shop */
 .shop-screen {
-  padding: 14px;
+  padding: 14px 14px calc(126px + env(safe-area-inset-bottom, 0px));
   text-align: left;
   overflow: hidden;
 }
@@ -3209,6 +3210,44 @@ button {
   background: rgba(140, 77, 32, 0.14);
   color: #6a3e22;
   font-weight: 900;
+}
+
+
+@media (max-height: 760px) {
+  .shop-hero-card {
+    min-height: 124px;
+    padding: 14px;
+  }
+
+  .shop-hero-copy h1 {
+    font-size: 30px;
+  }
+
+  .shop-hero-copy p {
+    font-size: 14px;
+    line-height: 1.25;
+  }
+
+  .shop-event-card {
+    padding: 12px;
+  }
+
+  .shop-event-header strong {
+    font-size: 18px;
+  }
+
+  .shop-event-timer-row {
+    margin-top: 10px;
+  }
+
+  .shop-event-progress-top {
+    margin-top: 10px;
+  }
+
+  .shop-event-progress-bar {
+    height: 16px;
+    margin-top: 6px;
+  }
 }
 
 /* Desktop / laptop web version */
