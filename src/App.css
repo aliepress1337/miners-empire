@@ -3052,3 +3052,161 @@ button {
   box-shadow: 0 1px 0 rgba(118, 80, 52, 0.26);
 }
 
+
+.web-login-app {
+  min-height: 100vh;
+}
+
+.web-login-screen {
+  min-height: 100vh;
+  padding: 28px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.web-login-card {
+  width: 100%;
+  padding: 24px 18px 20px;
+  border: 4px solid #765034;
+  border-radius: 26px;
+  background: rgba(255, 221, 193, 0.97);
+  box-shadow: 0 10px 0 rgba(118, 80, 52, 0.34), 0 18px 28px rgba(0, 0, 0, 0.28);
+  color: #1f1510;
+  text-align: center;
+}
+
+.web-login-coin {
+  width: 104px;
+  height: 104px;
+  object-fit: contain;
+  margin-bottom: 10px;
+  filter: drop-shadow(0 6px 4px rgba(0, 0, 0, 0.25));
+}
+
+.web-login-eyebrow {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(239, 166, 35, 0.24);
+  color: #8c4d20;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.web-login-card h1 {
+  margin: 0 0 10px;
+  font-size: 30px;
+  line-height: 1.05;
+}
+
+.web-login-card p {
+  margin: 0 0 18px;
+  font-size: 15px;
+  line-height: 1.36;
+  opacity: 0.82;
+}
+
+.web-login-main-button,
+.web-login-secondary-button,
+.web-login-actions a,
+.web-login-actions button {
+  border: 0;
+  border-radius: 16px;
+  font-size: 15px;
+  font-weight: 900;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.web-login-main-button {
+  width: 100%;
+  min-height: 54px;
+  background: linear-gradient(180deg, #efa623, #d88a1e);
+  color: #fff;
+  box-shadow: 0 4px 0 rgba(118, 80, 52, 0.28);
+}
+
+.web-login-main-button:disabled,
+.web-login-secondary-button:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.web-login-code-card {
+  margin: 16px 0;
+  padding: 15px 12px;
+  border: 2px solid rgba(140, 77, 32, 0.58);
+  border-radius: 18px;
+  background: rgba(255, 245, 225, 0.92);
+  display: grid;
+  gap: 8px;
+}
+
+.web-login-code-card span,
+.web-login-code-card small {
+  color: #6a3e22;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.web-login-code-card strong {
+  padding: 12px 10px;
+  border-radius: 14px;
+  background: #fff;
+  color: #1f1510;
+  font-size: 25px;
+  line-height: 1;
+  letter-spacing: 0.03em;
+  box-shadow: inset 0 0 0 2px rgba(118, 80, 52, 0.12);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.web-login-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.web-login-actions a,
+.web-login-actions button {
+  min-height: 46px;
+  padding: 13px 10px;
+  background: #8c4d20;
+  color: #fff6e6;
+}
+
+.web-login-status {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.48);
+  color: #6a3e22;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.web-login-secondary-button {
+  width: 100%;
+  min-height: 42px;
+  margin-top: 12px;
+  background: rgba(118, 80, 52, 0.14);
+  color: #6a3e22;
+}
+
+.friends-status-card button {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(140, 77, 32, 0.14);
+  color: #6a3e22;
+  font-weight: 900;
+}

@@ -15,6 +15,8 @@ import {
   getGameState,
   getLeaderboard,
   getPlayerReferrals,
+  getWebLoginStatus,
+  startWebLogin,
   syncPlayerProgress,
   syncPlayerProgressBeacon,
   type FinalRewardsDto,
@@ -23,6 +25,7 @@ import {
   type PlayerRewardDto,
   type PlayerSyncPayload,
   type ReferralDto,
+  type WebLoginStatusDto,
 } from './api'
 
 import {
@@ -135,6 +138,7 @@ type GameSave = {
 }
 
 const SAVE_KEY = 'tsutsik-game-save'
+const WEB_LOGIN_USER_KEY = 'tsutsik-web-login-user'
 
 const GAME_DURATION_DAYS = 14
 const GAME_DURATION_MS = GAME_DURATION_DAYS * 24 * 60 * 60 * 1000
@@ -1209,6 +1213,68 @@ function shouldBlockDesktopPlay() {
   return !isLocalDevelopmentHost() && !isPhoneLikeDevice()
 }
 
+
+function normalizeWebLoginTelegramUser(value: unknown): TelegramUser | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const candidate = value as {
+    id?: unknown
+    username?: unknown
+    firstName?: unknown
+  }
+  const id = Number(candidate.id)
+
+  if (!Number.isFinite(id) || id <= 0) {
+    return null
+  }
+
+  const username =
+    typeof candidate.username === 'string' && candidate.username.trim()
+      ? candidate.username.trim()
+      : undefined
+  const firstName =
+    typeof candidate.firstName === 'string' && candidate.firstName.trim()
+      ? candidate.firstName.trim()
+      : username ?? 'Web player'
+
+  return {
+    id,
+    firstName,
+    username,
+  }
+}
+
+function loadStoredWebLoginUser() {
+  try {
+    const rawUser = localStorage.getItem(WEB_LOGIN_USER_KEY)
+
+    if (!rawUser) {
+      return null
+    }
+
+    return normalizeWebLoginTelegramUser(JSON.parse(rawUser))
+  } catch {
+    return null
+  }
+}
+
+function saveStoredWebLoginUser(user: TelegramUser) {
+  localStorage.setItem(
+    WEB_LOGIN_USER_KEY,
+    JSON.stringify({
+      id: user.id,
+      username: user.username ?? null,
+      firstName: user.firstName,
+    }),
+  )
+}
+
+function clearStoredWebLoginUser() {
+  localStorage.removeItem(WEB_LOGIN_USER_KEY)
+}
+
 function DesktopBlockedScreen() {
   return (
     <div
@@ -1285,6 +1351,15 @@ function App() {
   const [telegramMode, setTelegramMode] = useState(false)
   const [telegramStartParam, setTelegramStartParam] = useState<string | null>(
     null,
+  )
+  const [webLoginRequired, setWebLoginRequired] = useState(false)
+  const [webLoginLoading, setWebLoginLoading] = useState(false)
+  const [webLoginSessionId, setWebLoginSessionId] = useState<string | null>(null)
+  const [webLoginCode, setWebLoginCode] = useState<string | null>(null)
+  const [webLoginExpiresAt, setWebLoginExpiresAt] = useState<string | null>(null)
+  const [webLoginBotUsername, setWebLoginBotUsername] = useState(BOT_USERNAME)
+  const [webLoginStatusText, setWebLoginStatusText] = useState(
+    'Нажми кнопку ниже, чтобы получить код входа.',
   )
 
   const [serverGame, setServerGame] = useState<GameStateDto | null>(null)
@@ -1605,12 +1680,24 @@ function App() {
     async function initApp() {
       initTelegramMiniApp()
 
-      const currentTelegramUser = getTelegramUser()
+      const miniAppMode = isOpenedInTelegram()
+      const miniAppUser = getTelegramUser()
+      const storedWebUser = miniAppMode ? null : loadStoredWebLoginUser()
+      const currentTelegramUser = miniAppUser ?? storedWebUser
       const currentStartParam = getTelegramStartParam()
 
       setTelegramUser(currentTelegramUser)
-      setTelegramMode(isOpenedInTelegram())
+      setTelegramMode(miniAppMode)
       setTelegramStartParam(currentStartParam)
+
+      if (!miniAppMode && !currentTelegramUser) {
+        setWebLoginRequired(true)
+        setBackendPlayerLoaded(false)
+        setServerStatusText('Waiting for web login')
+        return
+      }
+
+      setWebLoginRequired(false)
 
       try {
         const currentPlayerResponse = await getCurrentPlayer(currentTelegramUser)
@@ -2423,6 +2510,102 @@ function App() {
     }
   }
 
+
+
+  useEffect(() => {
+    if (!webLoginRequired || !webLoginSessionId) {
+      return
+    }
+
+    void checkWebLoginStatus()
+
+    const intervalId = window.setInterval(() => {
+      void checkWebLoginStatus()
+    }, 2500)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [webLoginRequired, webLoginSessionId])
+
+  async function startWebLoginFlow() {
+    setWebLoginLoading(true)
+    setWebLoginStatusText('Создаём код входа...')
+
+    try {
+      const response = await startWebLogin()
+
+      setWebLoginSessionId(response.sessionId)
+      setWebLoginCode(response.code)
+      setWebLoginExpiresAt(response.expiresAt)
+      setWebLoginBotUsername(response.botUsername || BOT_USERNAME)
+      setWebLoginStatusText('Код создан. Отправь команду боту и подожди подтверждение.')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error'
+
+      setWebLoginStatusText(`Не удалось создать код входа: ${message}`)
+    } finally {
+      setWebLoginLoading(false)
+    }
+  }
+
+  function finishWebLogin(status: Extract<WebLoginStatusDto, { confirmed: true }>) {
+    const confirmedUser = normalizeWebLoginTelegramUser(status.telegramUser)
+
+    if (!confirmedUser) {
+      setWebLoginStatusText('Бот подтвердил вход, но данные Telegram не распознаны.')
+      return
+    }
+
+    saveStoredWebLoginUser(confirmedUser)
+    setTelegramUser(confirmedUser)
+    setWebLoginRequired(false)
+    setWebLoginStatusText('Вход подтверждён. Загружаем игру...')
+    window.location.reload()
+  }
+
+  async function checkWebLoginStatus() {
+    if (!webLoginSessionId) {
+      return
+    }
+
+    try {
+      const status = await getWebLoginStatus(webLoginSessionId)
+
+      if (status.confirmed) {
+        finishWebLogin(status)
+        return
+      }
+
+      if (status.status === 'expired') {
+        setWebLoginSessionId(null)
+        setWebLoginCode(null)
+        setWebLoginExpiresAt(null)
+        setWebLoginStatusText('Код истёк. Создай новый код входа.')
+        return
+      }
+
+      setWebLoginStatusText('Ждём подтверждение в Telegram-боте...')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error'
+
+      if (message.includes('expired') || message.includes('404')) {
+        setWebLoginSessionId(null)
+        setWebLoginCode(null)
+        setWebLoginExpiresAt(null)
+        setWebLoginStatusText('Код истёк. Создай новый код входа.')
+        return
+      }
+
+      setWebLoginStatusText(`Проверка входа временно не удалась: ${message}`)
+    }
+  }
+
+  function resetWebLoginAccount() {
+    clearStoredWebLoginUser()
+    window.location.reload()
+  }
+
   async function copyReferralLink() {
     try {
       await navigator.clipboard.writeText(referralLink)
@@ -2434,6 +2617,80 @@ function App() {
     } catch {
       setReferralCopied(false)
     }
+  }
+
+
+  if (webLoginRequired) {
+    const loginCommand = webLoginCode ? `/login ${webLoginCode}` : ''
+    const botLink = `https://t.me/${webLoginBotUsername}`
+    const expiresText = webLoginExpiresAt
+      ? new Date(webLoginExpiresAt).toLocaleTimeString('ru-RU', {
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+      : null
+
+    return (
+      <div className="app web-login-app" style={{ backgroundImage: `url(${bgImage})` }}>
+        <main className="web-login-screen">
+          <section className="web-login-card">
+            <img className="web-login-coin" src={coinImage} alt="Tsutsik coin" />
+
+            <span className="web-login-eyebrow">Web version</span>
+            <h1>Вход через Telegram-бота</h1>
+            <p>
+              Чтобы веб-версия открыла твой настоящий прогресс, подтверди вход
+              через бота. После подтверждения баланс, апгрейды и скины будут те же,
+              что и в Telegram Mini App.
+            </p>
+
+            {!webLoginCode && (
+              <button
+                className="web-login-main-button"
+                type="button"
+                onClick={startWebLoginFlow}
+                disabled={webLoginLoading}
+              >
+                {webLoginLoading ? 'Создаём код...' : 'Получить код входа'}
+              </button>
+            )}
+
+            {webLoginCode && (
+              <div className="web-login-code-card">
+                <span>Отправь боту команду:</span>
+                <strong>{loginCommand}</strong>
+                {expiresText && <small>Код действует до {expiresText}</small>}
+              </div>
+            )}
+
+            <div className="web-login-actions">
+              <a href={botLink} target="_blank" rel="noreferrer">
+                Открыть бота
+              </a>
+
+              {webLoginCode && (
+                <button type="button" onClick={checkWebLoginStatus}>
+                  Проверить вход
+                </button>
+              )}
+            </div>
+
+            <div className="web-login-status">{webLoginStatusText}</div>
+
+            {webLoginCode && (
+              <button
+                className="web-login-secondary-button"
+                type="button"
+                onClick={startWebLoginFlow}
+                disabled={webLoginLoading}
+              >
+                Создать новый код
+              </button>
+            )}
+          </section>
+        </main>
+      </div>
+    )
   }
 
   if (bannedAt) {
@@ -2853,6 +3110,12 @@ function App() {
                 <span>Backend</span>
                 <b>{serverStatusText}</b>
               </div>
+
+              {!telegramMode && (
+                <button type="button" onClick={resetWebLoginAccount}>
+                  Выйти из веб-аккаунта
+                </button>
+              )}
             </div>
           </section>
         )}

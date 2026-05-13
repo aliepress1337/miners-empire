@@ -88,6 +88,34 @@ export type PlayerRewardDto = {
   promoCode: string
 }
 
+
+export type WebLoginTelegramUserDto = {
+  id: number
+  username: string | null
+  firstName: string | null
+}
+
+export type WebLoginStartDto = {
+  status: 'ok'
+  sessionId: string
+  code: string
+  expiresAt: string
+  botUsername: string
+}
+
+export type WebLoginStatusDto =
+  | {
+      status: 'pending' | 'expired'
+      confirmed: false
+      expiresAt?: string
+    }
+  | {
+      status: 'confirmed'
+      confirmed: true
+      telegramUser: WebLoginTelegramUserDto
+      player: PlayerDto | null
+    }
+
 export type FinalRewardsDto = {
   rewardPool: number
   playersCount: number
@@ -113,6 +141,21 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
   }
 
   return data as T
+}
+
+export async function startWebLogin() {
+  const response = await fetch(`${API_BASE_URL}/api/web-login/start`, {
+    method: 'POST',
+  })
+
+  return parseJsonResponse<WebLoginStartDto>(response)
+}
+
+export async function getWebLoginStatus(sessionId: string) {
+  const params = new URLSearchParams({ sessionId })
+  const response = await fetch(`${API_BASE_URL}/api/web-login/status?${params}`)
+
+  return parseJsonResponse<WebLoginStatusDto>(response)
 }
 
 export async function getGameState() {
