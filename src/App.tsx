@@ -678,11 +678,11 @@ const DEFAULT_UPGRADE_LEVELS: UpgradeLevels = FEED_UPGRADES.reduce<UpgradeLevels
 
 const SHOP_ITEMS: ShopItem[] = [
   {
-    title: 'Full AFK Farm',
+    title: 'AFK Ферма на ослах',
     description: 'Покупатель получает полный пассивный фарм офлайн вместо 0.5x. Навсегда для аккаунта.',
     badge: 'AFK Boost',
     priceLabel: '2.99$',
-    commandLabel: '/afkfarm @username',
+    commandLabel: '/afkfarm',
     icon: '⏱️',
     kind: 'afk',
   },
@@ -691,25 +691,25 @@ const SHOP_ITEMS: ShopItem[] = [
     description: 'Выбранный игрок 24 часа получает только 0.25x от кликов и пассивного фарма.',
     badge: '24 hours',
     priceLabel: '2.99$',
-    commandLabel: '/unluck @username',
+    commandLabel: '/unluck',
     icon: '💀',
     kind: 'unluck',
   },
   {
-    title: 'Reset Account',
+    title: 'Обнулить Аккаунт',
     description: 'Обнуляет прогресс выбранного игрока: баланс, апгрейды, фарм и 10 уровень.',
     badge: 'Reset',
     priceLabel: '10.99$',
-    commandLabel: '/resetacc @username',
+    commandLabel: '/resetacc',
     icon: '🧨',
     kind: 'reset',
   },
   {
-    title: 'Ban User',
+    title: 'Забанить Пользователя',
     description: 'Навсегда блокирует выбранного игрока в приложении. Только через ручное подтверждение.',
     badge: 'Forever',
     priceLabel: '19.99$',
-    commandLabel: '/banuser @username',
+    commandLabel: '/banuser',
     icon: '🔨',
     kind: 'ban',
   },
@@ -720,26 +720,26 @@ const SHOP_ITEMS: ShopItem[] = [
 const COIN_SKINS: CoinSkin[] = [
   {
     id: 1,
-    title: 'Gold Flash',
-    description: 'Яркий премиум-скин для монеты.',
+    title: 'Homie Shark',
+    description: 'Яркий премиум-скин похожий на оскара в 7 лет',
     image: coinSkin1,
   },
   {
     id: 2,
-    title: 'Blue Ice',
-    description: 'Холодный стиль для аккуратного профиля.',
+    title: 'BMW Master',
+    description: 'Холодный стиль для аккуратного мужчины (Андрей бы заценил)',
     image: coinSkin2,
   },
   {
     id: 3,
-    title: 'Purple Neon',
-    description: 'Более заметная монета для активной игры.',
+    title: 'Frogy Darly',
+    description: 'Более знаменита под ником superqueen, глотала 3 члена за один час и это только своих отцов',
     image: coinSkin3,
   },
   {
     id: 4,
-    title: 'Royal Doge',
-    description: 'Редкий декоративный скин без бонуса к фарму.',
+    title: 'SC GOAT',
+    description: 'Редкий декоративный скин для людей ценящих андерграунд культуру Z',
     image: coinSkin4,
   },
 ]
@@ -2937,7 +2937,7 @@ function App() {
               <div className="shop-hero-copy">
                 <span className="shop-eyebrow">Tsutsik Store</span>
                 <h1>Shop</h1>
-                <p>Скины монетки и ручные premium-действия. Нажатие на цену открывает чат с @Ivan210.</p>
+                <p>Скины монетки и premium-действия можно купить прямо в gmshop.</p>
               </div>
 
               <div className="shop-hero-coin">
@@ -3005,7 +3005,7 @@ function App() {
                 <div>
                   <span className="shop-card-tag">Coin skins</span>
                   <strong>Скины монетки</strong>
-                  <p>Цена каждого скина — {COIN_SKIN_PRICE_LABEL}. После оплаты @Ivan210 откроет скин вручную.</p>
+                  <p>Цена каждого скина - {COIN_SKIN_PRICE_LABEL}. После успешной оплаты вы получите скин.</p>
                 </div>
                 <button type="button" onClick={refreshCurrentPlayerCosmetics}>
                   Обновить
@@ -3072,11 +3072,6 @@ function App() {
                   </div>
                 </article>
               ))}
-            </div>
-
-            <div className="shop-note-card">
-              <strong>Безопасно для beta</strong>
-              <span>Все платные действия выдаются вручную через @Ivan210. Команды доступны только администратору бота.</span>
             </div>
           </section>
         )}
