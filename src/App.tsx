@@ -153,10 +153,6 @@ const LEVEL_10_FINAL_CRACK_DELAY_MS = 520
 const LEVEL_10_VIDEO_URL = new URL('./assets/dogs_lvl/10.MOV', import.meta.url).href
 const COIN_SKIN_SELLER_USERNAME = 'Ivan210'
 const COIN_SKIN_PRICE_LABEL = '0.99$'
-const MIN_TAP_INTERVAL_MS = 22
-const MAX_VALID_TAPS_PER_SECOND = 24
-const AUTOCLICKER_COOLDOWN_MS = 650
-const AUTOCLICKER_WARNING_MS = 1000
 
 const BOT_USERNAME = 'MinersEmpire_bot'
 const REFERRAL_JOIN_BONUS = 5000
@@ -1255,8 +1251,8 @@ function App() {
   const [clickProfit, setClickProfit] = useState(savedGame.clickProfit)
   const [hourlyProfit, setHourlyProfit] = useState(savedGame.hourlyProfit)
   const [upgradeLevels, setUpgradeLevels] = useState(savedGame.upgradeLevels)
-  const [gameStartedAt] = useState(savedGame.gameStartedAt)
-  const [gameEndsAt] = useState(savedGame.gameEndsAt)
+  const [gameStartedAt, setGameStartedAt] = useState(savedGame.gameStartedAt)
+  const [gameEndsAt, setGameEndsAt] = useState(savedGame.gameEndsAt)
   const [currentTime, setCurrentTime] = useState(Date.now())
   const [level10UnlockStep, setLevel10UnlockStep] = useState<Level10UnlockStep>(
     savedGame.level10UnlockStep,
@@ -1297,8 +1293,6 @@ function App() {
   const [finalRewardsLoading, setFinalRewardsLoading] = useState(false)
   const [promoCodeVisible, setPromoCodeVisible] = useState(false)
   const [backendPlayerLoaded, setBackendPlayerLoaded] = useState(false)
-  const [antiClickerWarning, setAntiClickerWarning] = useState<string | null>(null)
-
   const latestSyncPayloadRef = useRef<PlayerSyncPayload | null>(null)
   const syncInFlightRef = useRef(false)
   const syncVersionRef = useRef(0)
@@ -1309,11 +1303,6 @@ function App() {
   const lastSocialRefreshRef = useRef(0)
   const backendReadyRef = useRef(false)
   const gameSyncAllowedRef = useRef(false)
-  const tapTimestampsRef = useRef<number[]>([])
-  const lastAcceptedTapAtRef = useRef(0)
-  const blockedTapCountRef = useRef(0)
-  const tapCooldownUntilRef = useRef(0)
-  const antiClickerWarningTimeoutRef = useRef<number | null>(null)
 
   const [referrals, setReferrals] = useState<ReferralDto[]>([])
   const [referralsCount, setReferralsCount] = useState(0)
@@ -1442,6 +1431,34 @@ function App() {
     setBanReason(typeof player.banReason === 'string' ? player.banReason : null)
   }
 
+  function applyFullPlayerServerState(player: {
+    balance: number
+    clickProfit: number
+    hourlyProfit: number
+    upgradeLevels: UpgradeLevels
+    level10UnlockStep: number
+    level10AnimationCompleted: boolean
+    unlockedCoinSkins?: number[]
+    selectedCoinSkin?: number | null
+    afkFullFarmUnlocked?: boolean
+    unluckyUntil?: string | null
+    bannedAt?: string | null
+    banReason?: string | null
+  }) {
+    setBalance(getSafePositiveNumber(player.balance, 0))
+    setClickProfit(getSafePositiveNumber(player.clickProfit, 1) || 1)
+    setHourlyProfit(getSafePositiveNumber(player.hourlyProfit, 0))
+    setUpgradeLevels(normalizeUpgradeLevels(player.upgradeLevels))
+    setLevel10UnlockStep(getSafeLevel10UnlockStep(player.level10UnlockStep))
+    setLevel10AnimationCompleted(player.level10AnimationCompleted === true)
+
+    if (player.level10AnimationCompleted === true) {
+      setIsLevel10VideoPlaying(false)
+    }
+
+    applyPlayerServerState(player)
+  }
+
   async function refreshCurrentPlayerCosmetics() {
     try {
       const currentPlayerResponse = await getCurrentPlayer(telegramUser)
@@ -1547,7 +1564,12 @@ function App() {
       }
 
       if (response.player) {
-        applyPlayerServerState(response.player)
+        if (response.progressReset) {
+          applyFullPlayerServerState(response.player)
+          setServerStatusText('Official release reset applied')
+        } else {
+          applyPlayerServerState(response.player)
+        }
       }
 
       const now = Date.now()
@@ -1596,56 +1618,87 @@ function App() {
         setServerGame(currentPlayerResponse.game)
         setServerStatusText(`Backend game: ${currentPlayerResponse.game.status}`)
 
+        const serverGameStartedAt = getParsedTimestamp(
+          currentPlayerResponse.game.startedAt,
+          gameStartedAt,
+        )
+        const serverGameEndsAt = getParsedTimestamp(
+          currentPlayerResponse.game.endsAt,
+          gameEndsAt,
+        )
+
+        setGameStartedAt(serverGameStartedAt)
+        setGameEndsAt(serverGameEndsAt)
+
         const loadedPlayer = currentPlayerResponse.player
+        const rawLocalSave = localStorage.getItem(SAVE_KEY)
+        let localSavedAt = 0
+        let localGameStartedAt = savedGame.gameStartedAt
+
+        if (rawLocalSave) {
+          try {
+            const parsedLocalSave = JSON.parse(rawLocalSave) as Partial<GameSave>
+
+            localSavedAt = getSafeNumber(parsedLocalSave.savedAt, 0)
+            localGameStartedAt = getSafeNumber(
+              parsedLocalSave.gameStartedAt,
+              savedGame.gameStartedAt,
+            )
+          } catch {
+            localSavedAt = 0
+            localGameStartedAt = savedGame.gameStartedAt
+          }
+        }
+
+        const shouldResetForNewServerGame =
+          Boolean(rawLocalSave) && serverGameStartedAt > localGameStartedAt + 5000
 
         if (loadedPlayer) {
-          const rawLocalSave = localStorage.getItem(SAVE_KEY)
-          let localSavedAt = 0
-
-          if (rawLocalSave) {
-            try {
-              localSavedAt = getSafeNumber(
-                (JSON.parse(rawLocalSave) as Partial<GameSave>).savedAt,
-                0,
-              )
-            } catch {
-              localSavedAt = 0
-            }
-          }
-
           const backendSavedAt = new Date(loadedPlayer.updatedAt).getTime()
           const shouldUseBackendPlayer =
-            !rawLocalSave || backendSavedAt > localSavedAt + 5000
+            shouldResetForNewServerGame ||
+            !rawLocalSave ||
+            backendSavedAt > localSavedAt + 5000
 
           if (shouldUseBackendPlayer) {
-            setBalance(getSafePositiveNumber(loadedPlayer.balance, 0))
-            setClickProfit(getSafePositiveNumber(loadedPlayer.clickProfit, 1) || 1)
-            setHourlyProfit(getSafePositiveNumber(loadedPlayer.hourlyProfit, 0))
+            applyFullPlayerServerState(loadedPlayer)
           } else {
+            setLevel10UnlockStep(
+              getSafeLevel10UnlockStep(loadedPlayer.level10UnlockStep),
+            )
+            setLevel10AnimationCompleted(
+              loadedPlayer.level10AnimationCompleted === true,
+            )
+
+            if (loadedPlayer.level10AnimationCompleted === true) {
+              setIsLevel10VideoPlaying(false)
+            }
+
+            applyPlayerServerState(loadedPlayer)
+            setUpgradeLevels((currentLevels) =>
+              normalizeUpgradeLevels({
+                ...currentLevels,
+                ...loadedPlayer.upgradeLevels,
+              }),
+            )
             setServerStatusText(
               `Backend game: ${currentPlayerResponse.game.status}, local progress kept`,
             )
           }
-
-          setLevel10UnlockStep(
-            getSafeLevel10UnlockStep(loadedPlayer.level10UnlockStep),
-          )
-          setLevel10AnimationCompleted(
-            loadedPlayer.level10AnimationCompleted === true,
-          )
-
-          if (loadedPlayer.level10AnimationCompleted === true) {
-            setIsLevel10VideoPlaying(false)
-          }
-
-          applyPlayerServerState(loadedPlayer)
-
-          setUpgradeLevels((currentLevels) =>
-            normalizeUpgradeLevels({
-              ...currentLevels,
-              ...loadedPlayer.upgradeLevels,
-            }),
-          )
+        } else if (shouldResetForNewServerGame) {
+          setBalance(0)
+          setClickProfit(1)
+          setHourlyProfit(0)
+          setUpgradeLevels(DEFAULT_UPGRADE_LEVELS)
+          setLevel10UnlockStep(0)
+          setLevel10AnimationCompleted(false)
+          setUnlockedCoinSkins([])
+          setSelectedCoinSkin(null)
+          setAfkFullFarmUnlocked(false)
+          setUnluckyUntil(null)
+          setBannedAt(null)
+          setBanReason(null)
+          setServerStatusText('Official release reset applied')
         }
 
         await loadReferrals(currentTelegramUser)
@@ -1695,14 +1748,6 @@ function App() {
 
     return () => {
       window.clearInterval(timerId)
-    }
-  }, [])
-
-  useEffect(() => {
-    return () => {
-      if (antiClickerWarningTimeoutRef.current !== null) {
-        window.clearTimeout(antiClickerWarningTimeoutRef.current)
-      }
     }
   }, [])
 
@@ -1828,6 +1873,8 @@ function App() {
     latestSyncPayloadRef.current = {
       telegramUser,
       startParam: telegramStartParam,
+      gameStartedAt: new Date(eventStartedAt).toISOString(),
+      gameEndsAt: new Date(eventEndsAt).toISOString(),
       balance: displayedBalance,
       clickProfit: safeClickProfit,
       hourlyProfit: safeHourlyProfit,
@@ -1841,6 +1888,8 @@ function App() {
   }, [
     telegramUser,
     telegramStartParam,
+    eventStartedAt,
+    eventEndsAt,
     displayedBalance,
     safeClickProfit,
     safeHourlyProfit,
@@ -1995,9 +2044,7 @@ function App() {
     unlockedCoinSkins,
   )
   const activeCoinSkin = COIN_SKINS.find((skin) => skin.id === activeCoinSkinId)
-  const activeCoinImage = showLevel10Unlock
-    ? currentDogImage
-    : activeCoinSkin?.image ?? currentDogImage
+  const activeMainCoinImage = activeCoinSkin?.image ?? mainCoinImage
   const showLevel10Crack = showLevel10Unlock && level10UnlockStep > 0
 
   const progressPercent = useMemo(() => {
@@ -2183,70 +2230,8 @@ function App() {
     }
   }, [isLevel10VideoPlaying])
 
-  function showAntiClickerWarning(message: string) {
-    setAntiClickerWarning(message)
-
-    if (antiClickerWarningTimeoutRef.current !== null) {
-      window.clearTimeout(antiClickerWarningTimeoutRef.current)
-    }
-
-    antiClickerWarningTimeoutRef.current = window.setTimeout(() => {
-      setAntiClickerWarning(null)
-      antiClickerWarningTimeoutRef.current = null
-    }, AUTOCLICKER_WARNING_MS)
-  }
-
-  function canAcceptDogTap() {
-    const now = Date.now()
-
-    if (now < tapCooldownUntilRef.current) {
-      showAntiClickerWarning('Пауза: слишком много тапов подряд.')
-      return false
-    }
-
-    if (now - lastAcceptedTapAtRef.current < MIN_TAP_INTERVAL_MS) {
-      blockedTapCountRef.current += 1
-
-      if (blockedTapCountRef.current >= 4) {
-        tapCooldownUntilRef.current = now + AUTOCLICKER_COOLDOWN_MS
-        blockedTapCountRef.current = 0
-      }
-
-      showAntiClickerWarning('Некоторые слишком быстрые тапы не засчитаны.')
-      return false
-    }
-
-    const recentTaps = tapTimestampsRef.current.filter(
-      (tapTime) => now - tapTime < 1000,
-    )
-
-    if (recentTaps.length >= MAX_VALID_TAPS_PER_SECOND) {
-      blockedTapCountRef.current += 1
-
-      if (blockedTapCountRef.current >= 3) {
-        tapCooldownUntilRef.current = now + AUTOCLICKER_COOLDOWN_MS
-        blockedTapCountRef.current = 0
-      }
-
-      tapTimestampsRef.current = recentTaps
-      showAntiClickerWarning('Очень быстрый автокликер ограничен 🙂')
-      return false
-    }
-
-    recentTaps.push(now)
-    tapTimestampsRef.current = recentTaps
-    lastAcceptedTapAtRef.current = now
-    blockedTapCountRef.current = 0
-
-    return true
-  }
-
   function handleDogClick() {
     if (isGameFinished || isLevel10VideoPlaying) {
-      return
-    }
-
-    if (!canAcceptDogTap()) {
       return
     }
 
@@ -2377,6 +2362,8 @@ function App() {
     const nextPayload: PlayerSyncPayload = {
       telegramUser,
       startParam: telegramStartParam,
+      gameStartedAt: new Date(eventStartedAt).toISOString(),
+      gameEndsAt: new Date(eventEndsAt).toISOString(),
       balance: nextBalance,
       clickProfit: nextClickProfit,
       hourlyProfit: nextHourlyProfit,
@@ -2601,12 +2588,6 @@ function App() {
               </div>
             )}
 
-            {antiClickerWarning && (
-              <div className="anti-clicker-warning">
-                {antiClickerWarning}
-              </div>
-            )}
-
             <section className="dog-button-wrapper">
               <button
                 ref={dogButtonRef}
@@ -2619,10 +2600,10 @@ function App() {
                 onPointerDown={handleDogPointerDown}
                 disabled={isGameFinished || isLevel10VideoPlaying}
               >
-                <img className="main-coin" src={mainCoinImage} alt="main coin" />
+                <img className="main-coin" src={activeMainCoinImage} alt="main coin" />
                 <img
                   className="dog-image"
-                  src={activeCoinImage}
+                  src={currentDogImage}
                   alt={`dog level ${currentLevel.level}`}
                 />
 

@@ -57,6 +57,8 @@ export type LeaderboardDto = {
 export type PlayerSyncPayload = {
   telegramUser: TelegramUser | null
   startParam: string | null
+  gameStartedAt: string
+  gameEndsAt: string
   balance: number
   clickProfit: number
   hourlyProfit: number
@@ -187,6 +189,8 @@ function serializePlayerSyncPayload(payload: PlayerSyncPayload) {
     username: payload.telegramUser?.username,
     firstName: payload.telegramUser?.firstName,
     startParam: payload.startParam,
+    gameStartedAt: payload.gameStartedAt,
+    gameEndsAt: payload.gameEndsAt,
     balance: payload.balance,
     clickProfit: payload.clickProfit,
     hourlyProfit: payload.hourlyProfit,
@@ -210,6 +214,7 @@ export async function syncPlayerProgress(payload: PlayerSyncPayload) {
     status: 'ok'
     game: GameStateDto
     player: PlayerDto
+    progressReset?: boolean
   }>(response)
 }
 

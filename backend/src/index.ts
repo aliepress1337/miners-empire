@@ -15,12 +15,6 @@ const REFERRAL_HOURLY_BONUS_PERCENT = 0.05
 const TOP_1_REWARD_MULTIPLIER = 1.3
 const TOP_2_REWARD_MULTIPLIER = 1.2
 const TOP_3_REWARD_MULTIPLIER = 1.1
-const SERVER_MAX_TAPS_PER_SECOND = 28
-const SERVER_SYNC_GRACE_SECONDS = 7
-const SERVER_BALANCE_GAIN_GRACE_COINS = 25000
-const OFFLINE_HOURLY_MULTIPLIER = 0.5
-const BOOSTED_OFFLINE_HOURLY_MULTIPLIER = 1
-const UNLUCKY_PROFIT_MULTIPLIER = 0.25
 
 const GAME_STATE_ID = 'main'
 const GAME_DURATION_DAYS = 14
@@ -54,6 +48,8 @@ type PlayerSyncRequest = {
   username?: string
   firstName?: string
   startParam?: string | null
+  gameStartedAt?: string | null
+  gameEndsAt?: string | null
   balance: number
   clickProfit: number
   hourlyProfit: number
@@ -171,83 +167,21 @@ function toSafeNumber(value: unknown, fallback = 0) {
   return Number.isFinite(parsedValue) ? parsedValue : fallback
 }
 
-function isDateInFuture(value: Date | null | undefined, now: Date) {
-  return Boolean(value && value.getTime() > now.getTime())
-}
-
-function getAntiCheatSafeBalance(options: {
-  existingPlayer: {
-    id: string
-    balance: number
-    clickProfit: number
-    hourlyProfit: number
-    afkFullFarmUnlocked: boolean
-    unluckyUntil: Date | null
-    updatedAt: Date
-  } | null
-  requestedBalance: number
-  requestedClickProfit: number
-  requestedHourlyProfit: number
+function isStaleGameSync(options: {
+  gameStartedAt: Date
+  clientGameStartedAt: unknown
 }) {
-  const {
-    existingPlayer,
-    requestedBalance,
-    requestedClickProfit,
-    requestedHourlyProfit,
-  } = options
-
-  if (!existingPlayer || existingPlayer.id.startsWith('browser:')) {
-    return requestedBalance
+  if (typeof options.clientGameStartedAt !== 'string') {
+    return false
   }
 
-  const now = new Date()
-  const storedBalance = Math.max(0, Math.floor(existingPlayer.balance))
+  const parsedClientGameStartedAt = Date.parse(options.clientGameStartedAt)
 
-  if (requestedBalance <= storedBalance) {
-    return requestedBalance
+  if (!Number.isFinite(parsedClientGameStartedAt)) {
+    return false
   }
 
-  const elapsedSeconds = Math.max(
-    (now.getTime() - existingPlayer.updatedAt.getTime()) / 1000,
-    0,
-  )
-  const safeElapsedSeconds = elapsedSeconds + SERVER_SYNC_GRACE_SECONDS
-  const clickProfitLimit = Math.max(
-    1,
-    Math.floor(Math.max(existingPlayer.clickProfit, requestedClickProfit)),
-  )
-  const hourlyProfitLimit = Math.max(
-    0,
-    Math.floor(Math.max(existingPlayer.hourlyProfit, requestedHourlyProfit)),
-  )
-  const offlineMultiplier = existingPlayer.afkFullFarmUnlocked
-    ? BOOSTED_OFFLINE_HOURLY_MULTIPLIER
-    : OFFLINE_HOURLY_MULTIPLIER
-  const unluckyMultiplier = isDateInFuture(existingPlayer.unluckyUntil, now)
-    ? UNLUCKY_PROFIT_MULTIPLIER
-    : 1
-  const allowedClickGain =
-    clickProfitLimit * SERVER_MAX_TAPS_PER_SECOND * safeElapsedSeconds * unluckyMultiplier
-  const allowedPassiveGain =
-    (hourlyProfitLimit * offlineMultiplier * safeElapsedSeconds * unluckyMultiplier) / 3600
-  const allowedBalance = Math.floor(
-    storedBalance +
-      allowedClickGain +
-      allowedPassiveGain +
-      SERVER_BALANCE_GAIN_GRACE_COINS,
-  )
-
-  if (requestedBalance > allowedBalance) {
-    console.warn('Anti-clicker balance clamp:', {
-      playerId: existingPlayer.id,
-      storedBalance,
-      requestedBalance,
-      allowedBalance,
-      elapsedSeconds,
-    })
-  }
-
-  return Math.min(requestedBalance, Math.max(storedBalance, allowedBalance))
+  return parsedClientGameStartedAt + 5000 < options.gameStartedAt.getTime()
 }
 
 function normalizeLevel10UnlockStep(value: unknown) {
@@ -1034,12 +968,21 @@ app.post('/api/player/sync', async (req, res) => {
     return
   }
 
-  const safeBalance = getAntiCheatSafeBalance({
-    existingPlayer,
-    requestedBalance,
-    requestedClickProfit,
-    requestedHourlyProfit,
+  const game = await getGameStateResponse()
+  const progressReset = isStaleGameSync({
+    gameStartedAt: gameState.gameStartedAt,
+    clientGameStartedAt: body.gameStartedAt,
   })
+
+  if (progressReset && existingPlayer) {
+    res.json({
+      status: 'ok',
+      game,
+      player: playerToDto(existingPlayer),
+      progressReset: true,
+    })
+    return
+  }
 
   const existingUnlockedCoinSkins = normalizeUnlockedCoinSkins(
     existingPlayer?.unlockedCoinSkins,
@@ -1062,7 +1005,7 @@ app.post('/api/player/sync', async (req, res) => {
         typeof body.telegramId === 'number' ? String(body.telegramId) : null,
       username: body.username ?? null,
       firstName: body.firstName ?? null,
-      balance: safeBalance,
+      balance: requestedBalance,
       clickProfit: requestedClickProfit,
       hourlyProfit: requestedHourlyProfit,
       upgradeLevels,
@@ -1082,7 +1025,7 @@ app.post('/api/player/sync', async (req, res) => {
         typeof body.telegramId === 'number' ? String(body.telegramId) : null,
       username: body.username ?? null,
       firstName: body.firstName ?? null,
-      balance: safeBalance,
+      balance: requestedBalance,
       clickProfit: requestedClickProfit,
       hourlyProfit: requestedHourlyProfit,
       upgradeLevels,
@@ -1108,8 +1051,6 @@ app.post('/api/player/sync', async (req, res) => {
       id: player.id,
     },
   })
-
-  const game = await getGameStateResponse()
 
   console.log('Player stored:', updatedPlayer)
 

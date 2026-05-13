@@ -3052,33 +3052,3 @@ button {
   box-shadow: 0 1px 0 rgba(118, 80, 52, 0.26);
 }
 
-.anti-clicker-warning {
-  position: relative;
-  z-index: 902;
-  margin: 12px auto -12px;
-  width: min(320px, calc(100vw - 36px));
-  padding: 9px 12px;
-  border: 2px solid rgba(140, 77, 32, 0.38);
-  border-radius: 14px;
-  background: rgba(255, 244, 219, 0.94);
-  color: #8c4d20;
-  font-size: 13px;
-  font-weight: 900;
-  line-height: 1.25;
-  text-align: center;
-  box-shadow: 0 6px 0 rgba(118, 80, 52, 0.16);
-  pointer-events: none;
-  animation: antiClickerWarningPop 0.18s ease-out;
-}
-
-@keyframes antiClickerWarningPop {
-  from {
-    opacity: 0;
-    transform: translateY(6px) scale(0.97);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
